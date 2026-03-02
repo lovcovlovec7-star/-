@@ -64,6 +64,16 @@ html,body{margin:0;height:100%;background:linear-gradient(180deg,#020617,#111827
 <body>
 <div id="app"><div class="mobile-frame" id="frame"></div></div>
 <script>
+/* Feature Checklist:
+[x] BOOT watchdog + SAFE MODE
+[x] Глобальный перехват ошибок + консоль F1
+[x] Smoke Test на старте
+[x] Инварианты ScreenManager + fallback
+[x] Сброс данных из Safe Mode/Настроек
+[x] Проверки здоровья update/render + предупреждения
+[x] Полный UI shell (Домой/Профиль/Арены/Путь/Карты/Колода/Улучшения/Сундуки/Магазин/Квесты/Достижения/Настройки/Бой/Результаты)
+[x] Полировка боя: смерть юнитов, победа/поражение, энергия, башни
+*/
 const CARD_DB = [
   {
     id: 'c001',
@@ -4509,11 +4519,20 @@ window.app=new App();
   }
 
   app.tweens = new TweenManager();
+  let tweenLast=performance.now();
+  const tweenLoop=(now)=>{
+    const dt=Math.min(0.05,(now-tweenLast)/1000);
+    tweenLast=now;
+    app.tweens.tick(dt);
+    requestAnimationFrame(tweenLoop);
+  };
+  requestAnimationFrame(tweenLoop);
 
   const origShow = app.screens.show.bind(app.screens);
   app.screens.show = function(id){
-    const from=this.current?this.map[this.current]:null;
-    const to=this.map[id];
+    const screenMap=this.ui?.screens||app.ui?.screens||{};
+    const from=this.current?screenMap[this.current]:null;
+    const to=screenMap[id]||screenMap.menu;
     if(!to) return;
     if(from===to) return;
     if(from){from.style.opacity=1;from.style.transform='translateX(0)';from.classList.remove('active');}
@@ -4524,7 +4543,7 @@ window.app=new App();
     app.tweens.to(st,'x',0,.34,'outBack',0,()=>{});
     const anim=()=>{to.style.opacity=st.o.toFixed(3);to.style.transform=`translateX(${st.x}px)`; if(st.o<0.999) requestAnimationFrame(anim);};
     requestAnimationFrame(anim);
-    this.current=id;
+    this.current=to.id;
   };
 
   const p=app.state.state.profile;
@@ -4589,7 +4608,7 @@ window.app=new App();
   app.buildUI=function(){
     origBuildUI();
     const mk=(id,title,html)=>{
-      if(this.ui.map[id]) return;
+      if(this.ui.screens[id]) return;
       const sc=this.ui.makeScreen(id); this.buildTop(sc);
       const c=document.createElement('div'); c.className='main-content'; c.innerHTML=`<div class="card"><h3>${title}</h3></div><div style="height:8px"></div>${html}`;
       sc.appendChild(c); this.buildNav(sc);
@@ -4600,7 +4619,7 @@ window.app=new App();
     mk('achievements','Достижения','<div id="achievementList"></div>');
     mk('shop','Магазин','<div id="shopList"></div>');
 
-    const battle=this.ui.map.battle;
+    const battle=this.ui.screens.battle;
     if(!battle.querySelector('.placement-overlay')){
       const ov=document.createElement('canvas');ov.className='placement-overlay';ov.id='placementOverlay';battle.appendChild(ov);
       const hud=document.createElement('div');hud.className='hud-top';hud.innerHTML='<div class="hud-chip" id="battleTimer">03:00</div><div class="hud-chip" id="battleCrowns">👑 0 : 0</div>';battle.appendChild(hud);
@@ -4608,7 +4627,7 @@ window.app=new App();
   };
 
   document.getElementById('frame').innerHTML='';
-  app.ui.map={};
+  app.ui.screens={};
   app.buildUI();
   app.renderDynamic();
 
@@ -4804,9 +4823,9 @@ window.app=new App();
     const el=document.getElementById('upgradeList'); if(!el)return; el.innerHTML='';
     for(const c of CARD_DB.slice(0,60)){
       const d=this.state.get('cards.'+c.id); if(!d) continue;
-      const can=d.copies>=this.upgrade.copiesNeeded(c.id)&&this.state.get('profile.gold')>=this.upgrade.goldNeeded(c.id);
+      const can=d.copies>=this.upgrade.needCopiesFor(c.id)&&this.state.get('profile.gold')>=this.upgrade.costFor(c.id);
       const row=document.createElement('div'); row.className='offer';
-      row.innerHTML=`<div class='row between'><b>${c.name}</b><span>Ур. ${d.level}</span></div><div class='small'>Копии: ${d.copies}/${this.upgrade.copiesNeeded(c.id)} · Цена: ${this.upgrade.goldNeeded(c.id)}</div><button ${can?'':'disabled'}>Улучшить</button>`;
+      row.innerHTML=`<div class='row between'><b>${c.name}</b><span>Ур. ${d.level}</span></div><div class='small'>Копии: ${d.copies}/${this.upgrade.needCopiesFor(c.id)} · Цена: ${this.upgrade.costFor(c.id)}</div><button ${can?'':'disabled'}>Улучшить</button>`;
       row.querySelector('button').onclick=()=>{if(this.upgrade.upgrade(c.id)){questEvent('upgrade',1);this.ui.toast('Улучшено');}else this.ui.toast('Не хватает золота/копий');};
       el.appendChild(row);
     }
@@ -4881,4 +4900,121 @@ window.app=new App();
 })();
 </script>
 
+
+<script>
+(function(){
+  const STORAGE_PREFIX='arena_legends_';
+  const bootState={rendered:false,lastRender:performance.now(),lastUpdate:performance.now(),safe:false};
+  const errors=[];
+
+  function keyMatches(k){ return !!k && (k.startsWith(STORAGE_PREFIX)||/arena|legend|battle|deck|reward|quest/i.test(k)); }
+  function resetAllData(){
+    const del=[];
+    for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(keyMatches(k)) del.push(k); }
+    del.forEach(k=>localStorage.removeItem(k));
+    location.reload();
+  }
+
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;right:8px;top:8px;width:min(92vw,460px);max-height:70vh;overflow:auto;z-index:99999;background:rgba(2,6,23,.95);border:1px solid #334155;border-radius:10px;padding:10px;font:12px/1.35 monospace;color:#e2e8f0;display:none';
+  overlay.innerHTML='<div style="display:flex;justify-content:space-between"><b>Консоль ошибок (F1)</b><button id="errClr">Очистить</button></div><div id="errOut"></div>';
+  document.body.appendChild(overlay);
+  const errOut=overlay.querySelector('#errOut');
+  overlay.querySelector('#errClr').onclick=()=>{errors.length=0;errOut.innerHTML='';};
+  function pushError(msg,stack){
+    errors.push({t:new Date().toLocaleTimeString('ru-RU'),msg:String(msg),stack:String(stack||'')});
+    while(errors.length>50) errors.shift();
+    errOut.innerHTML=errors.slice().reverse().map(e=>`<div style="border-top:1px solid #1e293b;padding:6px 0"><div style="color:#fca5a5">[${e.t}] ${e.msg}</div><pre style="white-space:pre-wrap;color:#93c5fd">${e.stack.replace(/[<>]/g,m=>m==='<'?'&lt;':'&gt;')}</pre></div>`).join('');
+  }
+  window.addEventListener('keydown',e=>{if(e.key==='F1'){e.preventDefault();overlay.style.display=overlay.style.display==='none'?'block':'none';}});
+  window.onerror=(m,sr,l,c,er)=>{pushError(m,er?.stack||`${sr}:${l}:${c}`); return false;};
+  window.addEventListener('unhandledrejection',e=>pushError('Unhandled rejection',e.reason?.stack||JSON.stringify(e.reason)));
+
+  function ensureCanvasSize(){
+    const c=document.getElementById('battleCanvas'); if(!c) return true;
+    const r=c.getBoundingClientRect();
+    if(r.width<=1||r.height<=1){ c.style.width='100%'; c.style.height='100%'; return false; }
+    return true;
+  }
+  function showSafeMode(reason){
+    if(bootState.safe) return;
+    bootState.safe=true;
+    const frame=document.getElementById('frame')||document.body;
+    frame.innerHTML='';
+    const wrap=document.createElement('div');
+    wrap.className='safe-mode';
+    wrap.style.cssText='position:absolute;inset:0;background:linear-gradient(180deg,#020617,#111827);color:#e2e8f0;padding:16px;font-family:Arial;overflow:auto';
+    wrap.innerHTML=`<h2>SAFE MODE</h2><p>Причина: ${reason}</p><div id="diag" style="background:#0f172a;border:1px solid #334155;border-radius:10px;padding:10px"></div><div style="display:flex;gap:8px;margin-top:10px"><button id="resetSafe" style="flex:1;padding:12px;border-radius:10px;background:#ef4444;color:#fff;border:0">Сбросить настройки / очистить сохранения</button><button id="restartSafe" style="flex:1;padding:12px;border-radius:10px;background:#22d3ee;color:#00111f;border:0">Перезапуск</button></div>`;
+    frame.appendChild(wrap);
+    const diag=wrap.querySelector('#diag');
+    const active=document.querySelector('.screen.active');
+    diag.innerHTML=[`Canvas OK: ${ensureCanvasSize()}`,`window.app: ${!!window.app}`,`active screen: ${active?active.id:'нет'}`,`screens: ${document.querySelectorAll('.screen').length}`].map(x=>`<div>${x}</div>`).join('');
+    wrap.querySelector('#resetSafe').onclick=resetAllData;
+    wrap.querySelector('#restartSafe').onclick=()=>location.reload();
+  }
+
+  function smokeTest(){
+    const cOk=ensureCanvasSize();
+    const hasActive=!!document.querySelector('.screen.active');
+    const visible=!!document.querySelector('.topbar,.safe-mode,.screen.active');
+    if(!(cOk&&hasActive&&visible)){
+      pushError('Smoke Test failed',`canvas=${cOk} active=${hasActive} visible=${visible}`);
+      showSafeMode('Smoke Test провален');
+      return false;
+    }
+    return true;
+  }
+
+  setTimeout(()=>{
+    const active=document.querySelector('.screen.active');
+    if(!active){ pushError('BOOT watchdog','No active screen in 1s'); showSafeMode('BOOT watchdog'); }
+  },1000);
+
+  const warn=document.createElement('div');
+  warn.style.cssText='position:fixed;left:8px;top:8px;z-index:99998;background:rgba(15,23,42,.86);border:1px solid #334155;border-radius:8px;padding:6px 8px;font:11px monospace;color:#fde68a;display:none';
+  document.body.appendChild(warn);
+
+  function renderBeat(){ bootState.lastRender=performance.now(); bootState.rendered=true; requestAnimationFrame(renderBeat); }
+  requestAnimationFrame(renderBeat);
+
+  function patchApp(){
+    const app=window.app; if(!app||!app.screens) return;
+    if(!app.__bootPatch){
+      app.__bootPatch=true;
+      const os=app.screens.show?.bind(app.screens);
+      app.screens.show=function(id){
+        const screenMap=this.ui?.screens||window.app?.ui?.screens||{}; const target=screenMap[id]?id:'menu';
+        try{ os&&os(target); }
+        catch(e){ pushError('screen show error',e.stack||e); if(target!=='menu'&&screenMap.menu){ os('menu'); } else showSafeMode('ScreenManager fallback error'); }
+      };
+      if(app.battle){
+        const ou=app.battle.update?.bind(app.battle);
+        if(ou) app.battle.update=function(dt){ bootState.lastUpdate=performance.now(); return ou(dt); };
+      }
+      const settingsRoot=document.querySelector('#qualityBtns')?.closest('.main-content');
+      if(settingsRoot&&!settingsRoot.querySelector('#resetDataSettings')){
+        const card=document.createElement('div'); card.className='card'; card.style.marginTop='8px';
+        card.innerHTML='<h3>Восстановление</h3><button id="resetDataSettings" class="hero-button" style="background:linear-gradient(180deg,#ef4444,#b91c1c);color:#fff">Сбросить настройки / очистить сохранения</button>';
+        settingsRoot.appendChild(card);
+        card.querySelector('#resetDataSettings').onclick=resetAllData;
+      }
+    }
+    if(!document.querySelector('.screen.active')) app.screens.show('menu');
+  }
+
+  setInterval(()=>{
+    patchApp();
+    ensureCanvasSize();
+    const now=performance.now();
+    const renderStall=now-bootState.lastRender>1800;
+    const updateStall=window.app?.battle?.running && now-bootState.lastUpdate>2200;
+    warn.style.display=(renderStall||updateStall)?'block':'none';
+    if(renderStall||updateStall) warn.textContent=`Предупреждение: ${renderStall?'render ':''}${updateStall?'update':''} stall`;
+  },300);
+
+  window.addEventListener('resize',()=>{ ensureCanvasSize(); try{window.app?.battle?.resize?.();}catch(e){pushError('resize',e.stack||e);} });
+  window.addEventListener('orientationchange',()=>setTimeout(()=>{ensureCanvasSize(); try{window.app?.battle?.resize?.();}catch(e){pushError('orientation resize',e.stack||e);} },50));
+  setTimeout(smokeTest,1400);
+})();
+</script>
 </body></html>
