@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Laneforge Duel</title>
+  <style>
+    :root {
+      --bg: #101722;
+      --panel: #1e2a3d;
+      --panel2: #152033;
+      --text: #e8f2ff;
+      --accent: #6ad7ff;
+      --danger: #ff6b6b;
+      --good: #76e39e;
+    }
+    html, body { margin: 0; width: 100%; height: 100%; background: radial-gradient(circle at top,#1b2f46,#0b1118 65%); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; overflow: hidden; }
+    #app { position: fixed; inset: 0; display: grid; place-items: center; }
+    #gameWrap { width: min(95vw, 58vh); height: min(95vh, 170vw); aspect-ratio: 9/16; position: relative; border-radius: 18px; overflow: hidden; box-shadow: 0 24px 70px rgba(0,0,0,.45), inset 0 0 0 2px rgba(255,255,255,.06); background: #20334b; }
+    canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+    .overlay { position: absolute; inset: 0; display: grid; place-items: center; background: linear-gradient(to bottom,rgba(3,9,16,.15),rgba(3,9,16,.8)); }
+    .card { background: linear-gradient(165deg,#2f4c70,#1f3148); border: 2px solid rgba(255,255,255,.16); border-radius: 14px; padding: 20px; text-align: center; width: min(82%, 320px); }
+    .btn { border: 0; border-radius: 11px; padding: 12px 16px; font-weight: 700; color: #07202f; background: linear-gradient(180deg,#7be4ff,#4fc1f2); cursor: pointer; width: 100%; }
+    .btn + .btn { margin-top: 10px; }
+    .small { margin-top: 10px; color: #b4c8de; font-size: 13px; }
+    #hint { position: absolute; left: 50%; bottom: 166px; transform: translateX(-50%); pointer-events: none; font-weight: 700; text-shadow: 0 3px 8px rgba(0,0,0,.7); opacity: 0; transition: opacity .2s; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="gameWrap">
+    <canvas id="game" width="900" height="1600"></canvas>
+    <div id="menu" class="overlay">
+      <div class="card">
+        <h2 style="margin-top:0">Laneforge Duel</h2>
+        <p>Lane-based real-time card battler (offline).</p>
+        <button id="playBtn" class="btn">Play vs Bot</button>
+        <div class="small">Drag cards to deploy. Defend both lanes, break more towers, win the match.</div>
+      </div>
+    </div>
+    <div id="hint"></div>
+  </div>
+</div>
+<script>
+(() => {
+  'use strict';
+  const W = 900, H = 1600;
+  const SIDES = { PLAYER: 'player', ENEMY: 'enemy' };
+  const TEAM_COLOR = { player: '#7fd3ff', enemy: '#ff9d8e' };
+
+  // ===== Centralized balance config =====
+  const BALANCE = {
+    game: {
+      duration: 180,
+      overtime: 60,
+      tickRate: 60,
+      elixirMax: 10,
+      elixirRegen: 1 / 2.8,
+      elixirRegenOvertimeMult: 2,
+      towerDamageOvertimeDrain: 10,
+    },
+    lanes: { leftX: 300, rightX: 600, bridgeY1: 760, bridgeY2: 840, riverY1: 720, riverY2: 880 },
+    towers: {
+      side: { hp: 2200, range: 250, attackSpeed: 1.05, dmg: 90 },
+      core: { hp: 3300, range: 280, attackSpeed: 0.85, dmg: 110, dormantMul: 0.35 },
+    },
+    cards: {
+      blade_runner: { name:'Blade Runner', type:'unit', rarity:'common', cost:2, unit:'blade_runner' },
+      shield_brute: { name:'Shield Brute', type:'unit', rarity:'rare', cost:4, unit:'shield_brute' },
+      arc_shooter: { name:'Arc Shooter', type:'unit', rarity:'common', cost:3, unit:'arc_shooter' },
+      spark_mage: { name:'Spark Mage', type:'unit', rarity:'epic', cost:4, unit:'spark_mage' },
+      sky_drone: { name:'Sky Drone', type:'unit', rarity:'rare', cost:3, unit:'sky_drone' },
+      swarm_pack: { name:'Swarm Pack', type:'unit', rarity:'common', cost:3, unit:'swarmling', count:5 },
+      fire_burst: { name:'Fire Burst', type:'spell', rarity:'rare', cost:4, spell:'fire_burst' },
+      freeze_pulse: { name:'Freeze Pulse', type:'spell', rarity:'epic', cost:3, spell:'freeze_pulse' },
+      dash_totem: { name:'Dash Totem', type:'spell', rarity:'common', cost:2, spell:'dash_totem' },
+      lightning_pike: { name:'Lightning Pike', type:'spell', rarity:'legendary', cost:5, spell:'lightning_pike' },
+    },
+    units: {
+      blade_runner: { hp:290, dmg:75, speed:110, atkRange:28, atkSpeed:1.1, aggro:150, target:'ground', attackType:'melee', building:true, radius:13 },
+      shield_brute: { hp:980, dmg:110, speed:72, atkRange:30, atkSpeed:0.8, aggro:170, target:'ground', attackType:'melee', building:true, radius:18 },
+      arc_shooter: { hp:340, dmg:92, speed:76, atkRange:200, atkSpeed:0.85, aggro:220, target:'both', attackType:'projectile', projectileSpeed:360, building:true, radius:14 },
+      spark_mage: { hp:300, dmg:80, speed:74, atkRange:180, atkSpeed:0.75, aggro:220, target:'both', attackType:'splash', splash:58, projectileSpeed:300, building:true, radius:14 },
+      sky_drone: { hp:250, dmg:70, speed:98, atkRange:150, atkSpeed:1.0, aggro:190, target:'both', attackType:'projectile', projectileSpeed:420, air:true, building:false, radius:13 },
+      swarmling: { hp:95, dmg:42, speed:122, atkRange:20, atkSpeed:1.2, aggro:120, target:'ground', attackType:'melee', building:true, radius:10 },
+    },
+    spells: {
+      fire_burst: { radius:95, dmg:250, castMin:120, castMax:1300 },
+      freeze_pulse: { radius:110, freeze:2.2, castMin:80, castMax:1300 },
+      dash_totem: { radius:120, duration:4.5, speedMul:1.5, castMin:0, castMax:900 },
+      lightning_pike: { radius:230, chains:3, dmg:190, castMin:140, castMax:1250 },
+    }
+  };
+
+  const RARITY = { common:'#b5c9db', rare:'#7bc6ff', epic:'#db8dff', legendary:'#ffd87d' };
+  const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+  const dist = (a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+
+  class SpatialGrid {
+    constructor(size=120){ this.size=size; this.map=new Map(); }
+    key(x,y){ return `${(x/this.size)|0},${(y/this.size)|0}`; }
+    clear(){ this.map.clear(); }
+    add(ent){ const k=this.key(ent.x,ent.y); if(!this.map.has(k)) this.map.set(k,[]); this.map.get(k).push(ent); }
+    near(x,y,r){ const cs=this.size, out=[], cx=(x/cs)|0, cy=(y/cs)|0, cr=Math.ceil(r/cs);
+      for(let ix=cx-cr;ix<=cx+cr;ix++) for(let iy=cy-cr;iy<=cy+cr;iy++){ const arr=this.map.get(`${ix},${iy}`); if(arr) out.push(...arr); }
+      return out;
+    }
+  }
+
+  class Entity { constructor(g,x,y,side){ this.g=g; this.x=x; this.y=y; this.side=side; this.dead=false; this.id=Math.random(); } update(){} draw(){} }
+
+  class Tower extends Entity {
+    constructor(g,x,y,side,kind,lane){ super(g,x,y,side); this.kind=kind; this.lane=lane; const c=BALANCE.towers[kind]; this.maxHp=c.hp; this.hp=c.hp; this.range=c.range; this.attackCooldown=0; this.attackSpeed=c.attackSpeed; this.dmg=c.dmg; this.radius = kind==='core'?34:30; this.destroyed=false; }
+    update(dt){ if(this.destroyed) return; this.attackCooldown -= dt; if(this.attackCooldown>0) return;
+      const canAwaken=this.kind!=='core' || this.g.hasDestroyedSideTower(this.side);
+      let dmg = this.dmg; if(this.kind==='core'&&!canAwaken) dmg*=BALANCE.towers.core.dormantMul;
+      const targets=this.g.getEnemiesInRange(this.side,this.x,this.y,this.range,true);
+      if(targets.length){ const t=targets.sort((a,b)=>dist(this,a)-dist(this,b))[0]; this.g.spawnProjectile(this,t,dmg,440,0,'#fff8e8'); this.attackCooldown=1/this.attackSpeed; }
+    }
+    takeDamage(d){ if(this.destroyed) return; this.hp -= d; this.g.spawnImpact(this.x,this.y,12,'#ffd3b0'); if(this.hp<=0){ this.hp=0; this.destroyed=true; this.g.onTowerDown(this); }}
+    draw(ctx){ if(this.destroyed) return; ctx.save(); ctx.translate(this.x,this.y);
+      ctx.fillStyle = this.side===SIDES.PLAYER?'#5da0d9':'#d97567';
+      ctx.beginPath(); ctx.roundRect(-24,-24,48,48,10); ctx.fill();
+      ctx.fillStyle='#2a3a4d'; ctx.fillRect(-16,-36,32,14);
+      ctx.fillStyle='rgba(0,0,0,.4)'; ctx.fillRect(-28,30,56,6);
+      const hpW=64; ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fillRect(-hpW/2,-50,hpW,8); ctx.fillStyle='#70f19b'; ctx.fillRect(-hpW/2,-50,hpW*(this.hp/this.maxHp),8);
+      ctx.restore();
+    }
+  }
+
+  class Unit extends Entity {
+    constructor(g,x,y,side,unitKey,lane){ super(g,x,y,side); this.unitKey=unitKey; this.cfg=structuredClone(BALANCE.units[unitKey]); this.lane=lane; this.maxHp=this.cfg.hp; this.hp=this.cfg.hp; this.attackCd=Math.random()*0.2; this.speedBuff=1; this.freeze=0; this.radius=this.cfg.radius; this.target=null; this.pathTgt=this.choosePath(); }
+    choosePath(){ const enemyTowers=this.g.towers.filter(t=>t.side!==this.side && !t.destroyed && (t.kind==='side'?t.lane===this.lane:true));
+      return enemyTowers.sort((a,b)=>Math.abs(a.y-this.y)-Math.abs(b.y-this.y))[0] || this.g.getCore(this.side===SIDES.PLAYER?SIDES.ENEMY:SIDES.PLAYER);
+    }
+    validTarget(e){ if(e.side===this.side||e.dead||e.destroyed) return false; if(this.cfg.target==='ground' && e.air) return false; return true; }
+    takeDamage(d){ this.hp-=d; if(this.hp<=0){ this.dead=true; this.g.spawnImpact(this.x,this.y,10,'#ffc8c8'); } }
+    update(dt){ if(this.dead) return; this.attackCd -= dt; this.freeze = Math.max(0,this.freeze-dt);
+      if(this.g.debug) this.g.debugCounts.pathChecks++;
+      const near=this.g.grid.near(this.x,this.y,this.cfg.aggro).filter(e=>this.validTarget(e));
+      if(near.length){ this.target=near.sort((a,b)=>dist(this,a)-dist(this,b))[0]; }
+      else if(!this.target || this.target.destroyed || this.target.dead) this.target=this.choosePath();
+      if(!this.target) return;
+      const d=dist(this,this.target);
+      const attackRange = (this.target instanceof Tower && !this.cfg.building) ? -1 : this.cfg.atkRange + (this.target.radius||12);
+      if(attackRange>0 && d<=attackRange){
+        if(this.attackCd<=0){ this.doAttack(this.target); this.attackCd=1/this.cfg.atkSpeed; }
+      } else {
+        let speed=this.cfg.speed * this.speedBuff * (this.freeze>0?0:1);
+        let vx=(this.target.x-this.x), vy=(this.target.y-this.y), l=Math.hypot(vx,vy)||1; vx/=l; vy/=l;
+        if(!this.cfg.air){ if(this.y> BALANCE.lanes.riverY1 && this.y < BALANCE.lanes.riverY2){ vx += (this.lane==='left'?-0.4:0.4);} }
+        const sep=this.g.grid.near(this.x,this.y,34).filter(e=>e!==this&&e.side===this.side&&!e.dead);
+        for(const o of sep){ const dx=this.x-o.x,dy=this.y-o.y,dl=Math.hypot(dx,dy)||1; if(dl<24){ vx+=dx/dl*0.6; vy+=dy/dl*0.6; } }
+        l=Math.hypot(vx,vy)||1; this.x+=vx/l*speed*dt; this.y+=vy/l*speed*dt;
+      }
+    }
+    doAttack(t){
+      if(this.cfg.attackType==='melee'){ t.takeDamage(this.cfg.dmg); this.g.spawnImpact(t.x,t.y,8,'#ffe0b5'); }
+      else if(this.cfg.attackType==='projectile'){ this.g.spawnProjectile(this,t,this.cfg.dmg,this.cfg.projectileSpeed||380,0,'#f5fffd'); }
+      else if(this.cfg.attackType==='splash'){ this.g.spawnProjectile(this,t,this.cfg.dmg,this.cfg.projectileSpeed||320,this.cfg.splash||48,'#ffef8e'); }
+    }
+    draw(ctx){ if(this.dead) return; ctx.save(); ctx.translate(this.x,this.y);
+      ctx.globalAlpha = this.freeze>0?0.75:1;
+      ctx.fillStyle = TEAM_COLOR[this.side];
+      if(this.cfg.air){ ctx.beginPath(); ctx.arc(0,0,this.radius,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='#fff'; ctx.beginPath(); ctx.moveTo(-7,0);ctx.lineTo(7,0);ctx.stroke(); }
+      else if(this.unitKey.includes('brute')){ ctx.fillRect(-this.radius,-this.radius,this.radius*2,this.radius*2); ctx.fillStyle='#d9ecff'; ctx.fillRect(-6,-9,12,18); }
+      else if(this.unitKey.includes('mage')){ ctx.beginPath(); ctx.moveTo(0,-this.radius);ctx.lineTo(this.radius,this.radius);ctx.lineTo(-this.radius,this.radius);ctx.closePath();ctx.fill(); }
+      else if(this.unitKey.includes('shooter')){ ctx.beginPath(); ctx.roundRect(-this.radius,-this.radius*0.7,this.radius*2,this.radius*1.4,6); ctx.fill(); }
+      else { ctx.beginPath(); ctx.arc(0,0,this.radius,0,Math.PI*2); ctx.fill(); }
+      const hpW=28; ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fillRect(-hpW/2,-this.radius-12,hpW,4); ctx.fillStyle='#67e68f'; ctx.fillRect(-hpW/2,-this.radius-12,hpW*(this.hp/this.maxHp),4);
+      ctx.restore();
+    }
+  }
+
+  class Projectile extends Entity {
+    constructor(g,src,target,dmg,speed,splash,color){ super(g,src.x,src.y,src.side); this.target=target; this.dmg=dmg; this.speed=speed; this.splash=splash; this.color=color; }
+    update(dt){ if(!this.target || this.target.dead || this.target.destroyed){ this.dead=true; return; }
+      const dx=this.target.x-this.x,dy=this.target.y-this.y,d=Math.hypot(dx,dy)||1;
+      this.x += dx/d*this.speed*dt; this.y += dy/d*this.speed*dt;
+      if(d<12){
+        if(this.splash>0){
+          const victims=this.g.getEnemiesInRange(this.side,this.target.x,this.target.y,this.splash,true);
+          for(const v of victims) v.takeDamage(this.dmg);
+          this.g.spellRings.push({x:this.target.x,y:this.target.y,r:this.splash,t:0.2,c:'#ffda7f'});
+        } else this.target.takeDamage(this.dmg);
+        this.g.spawnImpact(this.x,this.y,9,this.color); this.dead=true;
+      }
+    }
+    draw(ctx){ ctx.fillStyle=this.color; ctx.beginPath(); ctx.arc(this.x,this.y,4,0,Math.PI*2); ctx.fill(); }
+  }
+
+  class Deck {
+    constructor(keys){ this.queue=[...keys]; this.hand=[]; while(this.hand.length<4) this.hand.push(this.queue.shift()); this.next=this.queue[0]; }
+    play(i){ const c=this.hand[i]; this.queue.push(c); this.hand[i]=this.queue.shift(); this.next=this.queue[0]; return c; }
+  }
+
+  class PlayerState {
+    constructor(deck){ this.elixir=5; this.deck=new Deck(deck); this.score=0; }
+  }
+
+  class Game {
+    constructor(canvas){
+      this.cv=canvas; this.ctx=canvas.getContext('2d');
+      this.grid=new SpatialGrid(120); this.units=[]; this.projectiles=[]; this.towers=[]; this.particles=[]; this.spellRings=[]; this.debug=false; this.debugCounts={pathChecks:0};
+      this.state='menu'; this.matchTime=BALANCE.game.duration; this.overtimeLeft=BALANCE.game.overtime; this.inOvertime=false; this.gameSpeed=1; this.paused=false;
+      this.msg=''; this.msgTime=0; this.drag=null; this.cameraShake=0; this.audioOn=true;
+      this.player=new PlayerState(['blade_runner','shield_brute','arc_shooter','spark_mage','sky_drone','swarm_pack','fire_burst','freeze_pulse']);
+      this.enemy=new PlayerState(['blade_runner','shield_brute','arc_shooter','spark_mage','sky_drone','swarm_pack','dash_totem','lightning_pike']);
+      this.aiTimer=1;
+      this.initInput();
+    }
+    reset(){ this.units=[]; this.projectiles=[]; this.towers=[]; this.particles=[]; this.spellRings=[]; this.player.elixir=5; this.enemy.elixir=5; this.player.score=this.enemy.score=0; this.matchTime=180; this.overtimeLeft=60; this.inOvertime=false; this.aiTimer=1; this.state='battle';
+      const lx=BALANCE.lanes.leftX, rx=BALANCE.lanes.rightX;
+      this.towers.push(new Tower(this,lx,1230,SIDES.PLAYER,'side','left'), new Tower(this,rx,1230,SIDES.PLAYER,'side','right'), new Tower(this,450,1450,SIDES.PLAYER,'core','core'));
+      this.towers.push(new Tower(this,lx,370,SIDES.ENEMY,'side','left'), new Tower(this,rx,370,SIDES.ENEMY,'side','right'), new Tower(this,450,150,SIDES.ENEMY,'core','core'));
+    }
+    getCore(side){ return this.towers.find(t=>t.side===side&&t.kind==='core'); }
+    hasDestroyedSideTower(side){ return this.towers.some(t=>t.side===side&&t.kind==='side'&&t.destroyed); }
+    onTowerDown(t){ if(t.side===SIDES.PLAYER) this.enemy.score++; else this.player.score++; this.cameraShake=14; for(let i=0;i<36;i++) this.spawnImpact(t.x+(Math.random()-0.5)*40,t.y+(Math.random()-0.5)*40,14,'#d8d8d8'); }
+    getEnemiesInRange(side,x,y,r,includeTowers=false){
+      const list=[]; for(const u of this.grid.near(x,y,r+30)){ if(u.side!==side && !u.dead && dist({x,y},u)<=r+(u.radius||10)) list.push(u); }
+      if(includeTowers) for(const t of this.towers){ if(t.side!==side && !t.destroyed && dist({x,y},t)<=r+t.radius) list.push(t); }
+      return list;
+    }
+    spawnProjectile(src,target,dmg,speed,splash,color){ this.projectiles.push(new Projectile(this,src,target,dmg,speed,splash,color)); this.beep(220,0.03); }
+    spawnImpact(x,y,n,c){ for(let i=0;i<n;i++) this.particles.push({x,y,vx:(Math.random()-0.5)*140,vy:(Math.random()-0.5)*140,t:0.45+Math.random()*0.3,c}); }
+    placeCard(side,key,x,y,lane){ const card=BALANCE.cards[key]; const owner=side===SIDES.PLAYER?this.player:this.enemy; if(owner.elixir<card.cost){ if(side===SIDES.PLAYER) this.hint('Not enough energy', true); return false; }
+      if(card.type==='unit'){
+        if(side===SIDES.PLAYER && y < BALANCE.lanes.riverY2+10){ this.hint('Place on your side', true); return false; }
+        if(side===SIDES.ENEMY && y > BALANCE.lanes.riverY1-10) return false;
+        const count = card.count||1;
+        for(let i=0;i<count;i++) this.units.push(new Unit(this,x+(Math.random()-0.5)*36,y+(Math.random()-0.5)*24,side,card.unit,lane));
+      } else this.castSpell(side,card.spell,x,y);
+      owner.elixir -= card.cost;
+      this.beep(340,0.04);
+      return true;
+    }
+    castSpell(side,spell,x,y){ const cfg=BALANCE.spells[spell]; const origin = side===SIDES.PLAYER?{x:450,y:1450}:{x:450,y:150}; const d=dist(origin,{x,y}); if(d<cfg.castMin||d>cfg.castMax){ if(side===SIDES.PLAYER) this.hint('Out of cast range', true); return; }
+      this.spellRings.push({x,y,r:cfg.radius,t:0.35,c:'#8be9ff'});
+      const enemies=this.getEnemiesInRange(side,x,y,cfg.radius,true);
+      const allies=[...this.units].filter(u=>u.side===side && dist(u,{x,y})<cfg.radius);
+      if(spell==='fire_burst'){ for(const e of enemies) e.takeDamage(cfg.dmg); }
+      if(spell==='freeze_pulse'){ for(const e of enemies){ if(e instanceof Unit) e.freeze=Math.max(e.freeze,cfg.freeze); } }
+      if(spell==='dash_totem'){ for(const a of allies){ a.speedBuff=cfg.speedMul; a.speedBuffTimer=cfg.duration; } }
+      if(spell==='lightning_pike'){
+        const sorted=enemies.sort((a,b)=>dist({x,y},a)-dist({x,y},b)).slice(0,cfg.chains);
+        sorted.forEach((e,i)=>{ e.takeDamage(cfg.dmg); this.particles.push({x:e.x,y:e.y,vx:0,vy:0,t:0.15,c:'#d9f4ff',lineFrom:i?sorted[i-1]:{x,y}}); });
+      }
+    }
+    hint(text,bad=false){ this.msg=text; this.msgTime=1.1; const el=document.getElementById('hint'); el.textContent=text; el.style.color=bad?'#ff8080':'#fff27c'; el.style.opacity=1; setTimeout(()=>el.style.opacity=0,700); }
+    initInput(){
+      const p = ev => { const r=this.cv.getBoundingClientRect(); const t=ev.touches?ev.touches[0]:ev; return {x:(t.clientX-r.left)/r.width*W, y:(t.clientY-r.top)/r.height*H}; };
+      const start=(ev)=>{ if(this.state!=='battle') return; const pt=p(ev); const idx=this.cardAt(pt.x,pt.y); if(idx>=0) this.drag={idx,start:pt,now:pt}; };
+      const move=(ev)=>{ if(!this.drag) return; this.drag.now=p(ev); ev.preventDefault?.(); };
+      const end=(ev)=>{ if(!this.drag||this.state!=='battle') return; const pt=p(ev); const key=this.player.deck.hand[this.drag.idx]; const lane = pt.x < 450 ? 'left':'right'; if(this.placeCard(SIDES.PLAYER,key,clamp(pt.x,80,820),clamp(pt.y,120,1480),lane)) this.player.deck.play(this.drag.idx); this.drag=null; };
+      this.cv.addEventListener('mousedown',start); window.addEventListener('mousemove',move); window.addEventListener('mouseup',end);
+      this.cv.addEventListener('touchstart',start,{passive:false}); window.addEventListener('touchmove',move,{passive:false}); window.addEventListener('touchend',end);
+      window.addEventListener('keydown',(e)=>{ if(e.key==='d') this.debug=!this.debug; if(e.key==='r') this.reset(); if(e.key===' ') this.paused=!this.paused; if(e.key==='x') this.gameSpeed=this.gameSpeed===1?2:1; });
+    }
+    cardAt(x,y){ if(y<1420) return -1; const w=170,g=10,start=35; for(let i=0;i<4;i++){ const cx=start+i*(w+g); if(x>cx&&x<cx+w&&y>1430&&y<1570) return i; } return -1; }
+    aiThink(dt){
+      this.aiTimer -= dt; if(this.aiTimer>0) return;
+      this.aiTimer=0.5+Math.random()*1.0;
+      if(Math.random()<0.18) return;
+      const weakPlayerSide = this.towers.filter(t=>t.side===SIDES.PLAYER&&t.kind==='side'&&!t.destroyed).sort((a,b)=>a.hp-b.hp)[0];
+      const lane = weakPlayerSide ? weakPlayerSide.lane : (Math.random()<0.5?'left':'right');
+      const hand=this.enemy.deck.hand;
+      const pressure = this.units.filter(u=>u.side===SIDES.PLAYER && u.lane===lane && u.y<980).length;
+      let pick=-1, x=lane==='left'?BALANCE.lanes.leftX:BALANCE.lanes.rightX, y=520;
+      if(pressure>=3){ pick=hand.findIndex(k=>['shield_brute','spark_mage','fire_burst','freeze_pulse'].includes(k)); }
+      else if(this.enemy.elixir>8){
+        const tank=hand.findIndex(k=>k==='shield_brute'); if(tank>=0&&this.placeCard(SIDES.ENEMY,hand[tank],x,520,lane)){ this.enemy.deck.play(tank); this.aiTimer=0.35; const back=hand.findIndex(k=>['arc_shooter','spark_mage','sky_drone'].includes(k)); if(back>=0&&this.enemy.elixir>=BALANCE.cards[hand[back]].cost){ this.placeCard(SIDES.ENEMY,hand[back],x,430,lane); this.enemy.deck.play(back);} return; }
+      } else if(this.units.filter(u=>u.side===SIDES.PLAYER && u.y<860).length>=4){ pick=hand.findIndex(k=>k==='fire_burst'||k==='lightning_pike'); y=760; }
+      if(pick<0){ const order=['blade_runner','arc_shooter','sky_drone','shield_brute','swarm_pack','freeze_pulse','dash_totem','fire_burst','lightning_pike']; pick=hand.findIndex(k=>order.includes(k)); }
+      if(pick>=0 && Math.random()>0.15){ const key=hand[pick]; const placed=this.placeCard(SIDES.ENEMY,key,x+(Math.random()-0.5)*60,y+(Math.random()-0.5)*40,lane); if(placed) this.enemy.deck.play(pick); }
+    }
+    beep(freq,d){ if(!this.audioOn) return; if(!this.ac){ this.ac=new (window.AudioContext||window.webkitAudioContext)(); }
+      const o=this.ac.createOscillator(),g=this.ac.createGain(); o.type='triangle'; o.frequency.value=freq; o.connect(g); g.connect(this.ac.destination); g.gain.value=0.02; o.start(); o.stop(this.ac.currentTime+d);
+    }
+    update(dt){
+      if(this.state!=='battle'||this.paused) return;
+      dt*=this.gameSpeed;
+      const regen = BALANCE.game.elixirRegen * (this.inOvertime?BALANCE.game.elixirRegenOvertimeMult:1);
+      this.player.elixir=clamp(this.player.elixir+regen*dt,0,10); this.enemy.elixir=clamp(this.enemy.elixir+regen*dt,0,10);
+      if(!this.inOvertime){ this.matchTime-=dt; if(this.matchTime<=0){ this.inOvertime=true; this.matchTime=0; this.hint('Overtime!'); }}
+      else { this.overtimeLeft-=dt; for(const t of this.towers) if(!t.destroyed) t.takeDamage(BALANCE.game.towerDamageOvertimeDrain*dt); }
+      this.aiThink(dt);
+
+      this.grid.clear(); for(const u of this.units) if(!u.dead) this.grid.add(u);
+      this.debugCounts.pathChecks=0;
+      for(const t of this.towers) t.update(dt);
+      for(const u of this.units){ if(u.speedBuffTimer){ u.speedBuffTimer-=dt; if(u.speedBuffTimer<=0) u.speedBuff=1; } u.update(dt); }
+      for(const p of this.projectiles) p.update(dt);
+      for(const p of this.particles){ p.t-=dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.93; p.vy*=0.93; }
+      for(const r of this.spellRings) r.t-=dt;
+      this.units=this.units.filter(u=>!u.dead);
+      this.projectiles=this.projectiles.filter(p=>!p.dead);
+      this.particles=this.particles.filter(p=>p.t>0);
+      this.spellRings=this.spellRings.filter(r=>r.t>0);
+      this.cameraShake=Math.max(0,this.cameraShake-dt*22);
+
+      const endByTime = this.inOvertime && this.overtimeLeft<=0;
+      const coreP=this.getCore(SIDES.PLAYER), coreE=this.getCore(SIDES.ENEMY);
+      if(coreP.destroyed||coreE.destroyed||endByTime){ this.state='end'; let result='Draw'; if(this.player.score!==this.enemy.score) result=this.player.score>this.enemy.score?'Victory!':'Defeat'; else if(coreE.hp!==coreP.hp) result=coreE.hp<coreP.hp?'Victory!':'Defeat'; this.showEnd(result); }
+    }
+    showEnd(result){ document.getElementById('menu').style.display='grid'; document.querySelector('#menu .card').innerHTML=`<h2>${result}</h2><p>Score ${this.player.score} : ${this.enemy.score}</p><button id='again' class='btn'>Restart Match</button><button id='back' class='btn'>Back to Menu</button>`;
+      document.getElementById('again').onclick=()=>{ document.getElementById('menu').style.display='none'; this.reset(); };
+      document.getElementById('back').onclick=()=>location.reload();
+    }
+    drawArena(ctx){
+      ctx.fillStyle='#5f9a57'; ctx.fillRect(0,0,W,H);
+      for(let i=0;i<180;i++){ ctx.fillStyle=i%2?'#6ba861':'#5a944f'; ctx.fillRect((i*73)%W,((i*127)%H),2,2); }
+      ctx.fillStyle='#bfa678'; ctx.fillRect(230,0,140,H); ctx.fillRect(530,0,140,H);
+      ctx.fillStyle='#4c87b5'; ctx.fillRect(0,BALANCE.lanes.riverY1,W,BALANCE.lanes.riverY2-BALANCE.lanes.riverY1);
+      ctx.fillStyle='#8b6d4f'; ctx.fillRect(250,760,100,80); ctx.fillRect(550,760,100,80);
+      ctx.fillStyle='rgba(255,255,255,.15)'; ctx.fillRect(0,800,W,2);
+    }
+    drawUI(ctx,fps){
+      const timer = this.inOvertime ? `OT ${Math.ceil(this.overtimeLeft)}` : `${Math.floor(this.matchTime/60)}:${String(Math.floor(this.matchTime%60)).padStart(2,'0')}`;
+      ctx.fillStyle='rgba(16,23,34,.72)'; ctx.fillRect(280,12,340,52);
+      ctx.fillStyle='#fff'; ctx.font='bold 30px system-ui'; ctx.textAlign='center'; ctx.fillText(`${this.player.score}  |  ${timer}  |  ${this.enemy.score}`,450,48);
+      const py=1430,w=170,g=10,sx=35;
+      ctx.fillStyle='rgba(12,18,30,.82)'; ctx.fillRect(0,1408,W,192);
+      for(let i=0;i<4;i++){
+        const key=this.player.deck.hand[i], c=BALANCE.cards[key], x=sx+i*(w+g);
+        ctx.fillStyle='#1f2f47'; ctx.fillRect(x,py,w,140); ctx.strokeStyle=RARITY[c.rarity]; ctx.lineWidth=3; ctx.strokeRect(x+1,py+1,w-2,138);
+        ctx.fillStyle='#fff'; ctx.font='bold 20px system-ui'; ctx.fillText(c.name,x+w/2,py+40); ctx.font='15px system-ui'; ctx.fillStyle='#d0e1f7'; ctx.fillText(c.type.toUpperCase(),x+w/2,py+64);
+        ctx.fillStyle='#ffe28a'; ctx.beginPath(); ctx.arc(x+26,py+112,16,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#1a273a'; ctx.font='bold 18px system-ui'; ctx.fillText(c.cost,x+26,py+118);
+        this.drawCardIcon(ctx,c,x+w-40,py+106);
+      }
+      ctx.fillStyle='rgba(18,30,46,.95)'; ctx.fillRect(760,1438,120,130); ctx.strokeStyle='#6aa2d4'; ctx.strokeRect(760,1438,120,130);
+      const n=BALANCE.cards[this.player.deck.next]; ctx.fillStyle='#a6c2de'; ctx.font='13px system-ui'; ctx.fillText('NEXT',820,1458); ctx.fillStyle='#fff'; ctx.font='15px system-ui'; ctx.fillText(n.name,820,1490);
+      this.drawCardIcon(ctx,n,820,1534);
+
+      // Elixir and buttons
+      ctx.fillStyle='#39214d'; ctx.fillRect(35,1390,650,12); ctx.fillStyle='#bb6bff'; ctx.fillRect(35,1390,650*(this.player.elixir/10),12);
+      ctx.fillStyle='#fff'; ctx.font='14px system-ui'; ctx.textAlign='left'; ctx.fillText(`Energy ${this.player.elixir.toFixed(1)}/10`,35,1382);
+      const btns=[['Pause',this.paused],['Restart',false],[`Speed x${this.gameSpeed}`,false],['Debug D',this.debug]];
+      btns.forEach((b,i)=>{ const x=700,y=1328+i*68; ctx.fillStyle=b[1]?'#556f91':'#2b4365'; ctx.fillRect(x,y,180,52); ctx.fillStyle='#fff'; ctx.textAlign='center'; ctx.fillText(b[0],x+90,y+32); });
+
+      if(this.drag){ const key=this.player.deck.hand[this.drag.idx], c=BALANCE.cards[key]; const p=this.drag.now;
+        ctx.globalAlpha=.35; ctx.fillStyle='#89f1ff'; if(c.type==='unit') ctx.fillRect(0,BALANCE.lanes.riverY2,W,H-BALANCE.lanes.riverY2); else ctx.fillRect(0,0,W,H);
+        ctx.globalAlpha=.9; this.drawCardIcon(ctx,c,p.x,p.y,36); ctx.globalAlpha=1;
+      }
+      if(this.debug){
+        ctx.fillStyle='rgba(0,0,0,.5)'; ctx.fillRect(12,80,270,130); ctx.fillStyle='#9fe8ff'; ctx.textAlign='left'; ctx.fillText(`FPS ${fps.toFixed(1)}`,20,104); ctx.fillText(`Units ${this.units.length}`,20,126); ctx.fillText(`Projectiles ${this.projectiles.length}`,20,148); ctx.fillText(`Path checks ${this.debugCounts.pathChecks}`,20,170); ctx.fillText(`Tick ${BALANCE.game.tickRate} / Speed ${this.gameSpeed}x`,20,192);
+        ctx.strokeStyle='rgba(255,255,255,.08)'; for(let x=0;x<W;x+=120){ ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke(); } for(let y=0;y<H;y+=120){ ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke(); }
+        for(const u of this.units){ ctx.strokeStyle='rgba(255,255,255,.18)'; ctx.beginPath(); ctx.arc(u.x,u.y,u.cfg.aggro,0,Math.PI*2); ctx.stroke(); }
+      }
+    }
+    drawCardIcon(ctx,c,x,y,s=20){ ctx.save(); ctx.translate(x,y); ctx.fillStyle='#d9f1ff';
+      if(c.type==='spell'){ ctx.beginPath(); ctx.arc(0,0,s*0.7,0,Math.PI*2); ctx.strokeStyle='#95eaff'; ctx.lineWidth=3; ctx.stroke(); ctx.beginPath(); ctx.moveTo(-s*0.4,0);ctx.lineTo(0,-s*0.5);ctx.lineTo(s*0.4,0); ctx.stroke(); }
+      else if(c.unit==='shield_brute'){ ctx.fillRect(-s*0.5,-s*0.5,s,s); }
+      else if(c.unit==='arc_shooter'){ ctx.beginPath(); ctx.roundRect(-s*0.6,-s*0.4,s*1.2,s*0.8,5); ctx.fill(); }
+      else if(c.unit==='spark_mage'){ ctx.beginPath(); ctx.moveTo(0,-s*0.7);ctx.lineTo(s*0.7,s*0.7);ctx.lineTo(-s*0.7,s*0.7);ctx.closePath(); ctx.fill(); }
+      else { ctx.beginPath(); ctx.arc(0,0,s*0.6,0,Math.PI*2); ctx.fill(); }
+      ctx.restore();
+    }
+    render(fps){
+      const ctx=this.ctx; ctx.save(); const sh=this.cameraShake; ctx.setTransform(1,0,0,1,(Math.random()-0.5)*sh,(Math.random()-0.5)*sh);
+      this.drawArena(ctx);
+      for(const r of this.spellRings){ ctx.strokeStyle=r.c; ctx.globalAlpha=r.t*1.5; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(r.x,r.y,r.r,0,Math.PI*2); ctx.stroke(); ctx.globalAlpha=1; }
+      for(const t of this.towers) t.draw(ctx);
+      for(const u of this.units) u.draw(ctx);
+      for(const p of this.projectiles) p.draw(ctx);
+      for(const p of this.particles){ ctx.fillStyle=p.c; ctx.globalAlpha=clamp(p.t*2,0,1); ctx.fillRect(p.x,p.y,3,3);} ctx.globalAlpha=1;
+      this.drawUI(ctx,fps);
+      ctx.restore();
+    }
+  }
+
+  const game = new Game(document.getElementById('game'));
+  document.getElementById('playBtn').onclick = () => { document.getElementById('menu').style.display='none'; game.reset(); };
+
+  // clickable canvas UI buttons
+  game.cv.addEventListener('click', (e)=>{
+    if(game.state!=='battle') return;
+    const r=game.cv.getBoundingClientRect(); const x=(e.clientX-r.left)/r.width*W, y=(e.clientY-r.top)/r.height*H;
+    if(x>700&&x<880&&y>1328&&y<1380) game.paused=!game.paused;
+    else if(x>700&&x<880&&y>1396&&y<1448) game.reset();
+    else if(x>700&&x<880&&y>1464&&y<1516) game.gameSpeed=game.gameSpeed===1?2:1;
+    else if(x>700&&x<880&&y>1532&&y<1584) game.debug=!game.debug;
+  });
+
+  let last=performance.now(), acc=0, dt=1/BALANCE.game.tickRate, fps=60, fpsTimer=0, frames=0;
+  function loop(t){
+    const delta=Math.min(0.1,(t-last)/1000); last=t; acc+=delta;
+    while(acc>=dt){ game.update(dt); acc-=dt; }
+    frames++; fpsTimer+=delta; if(fpsTimer>=0.25){ fps=frames/fpsTimer; fpsTimer=0; frames=0; }
+    game.render(fps);
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
