@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>Laneforge Arena - Overhaul</title>
+  <title>Арена Линий</title>
   <style>
     :root {
       --bg0: #070b14;
@@ -594,10 +594,27 @@
       overflow: hidden;
       transform: translateY(0);
       transition: transform .1s ease, filter .1s ease;
+      touch-action: none;
     }
 
     .battle-card.selected { transform: translateY(-10px); filter: brightness(1.15); }
     .battle-card.unaffordable { filter: grayscale(.85) brightness(.7); }
+    .battle-card.dragging { opacity: .35; }
+
+    .drag-ghost {
+      position: absolute;
+      width: 120px;
+      height: 110px;
+      margin-left: -60px;
+      margin-top: -55px;
+      border-radius: 12px;
+      border: 2px solid rgba(165,235,255,.9);
+      background: linear-gradient(180deg, rgba(50,86,132,0.95), rgba(15,25,44,0.95));
+      box-shadow: 0 10px 30px rgba(0,0,0,.45), 0 0 20px rgba(115,212,255,.45);
+      pointer-events: none;
+      z-index: 30;
+      display: none;
+    }
 
     .battle-card canvas {
       position: absolute;
@@ -758,62 +775,62 @@
 
   const CARD_LIBRARY = {
     blade_runner: {
-      id: 'blade_runner', name: 'Blade Runner', type: 'unit', rarity: 'common', cost: 2,
-      desc: 'Fast melee striker. Cheap pressure tool for both lanes.',
+      id: 'blade_runner', name: 'Клинок', type: 'unit', rarity: 'common', cost: 2,
+      desc: 'Быстрый боец ближнего боя. Давит на любой линии.',
       stats: { hp: 280, dmg: 72, speed: 118, range: 24, as: 1.18, target: 'ground', radius: 14, aggro: 170, projectile: 0, air: false },
       role: ['swarm', 'pressure']
     },
     shield_brute: {
-      id: 'shield_brute', name: 'Shield Brute', type: 'unit', rarity: 'rare', cost: 4,
-      desc: 'High HP frontline tank with moderate melee damage.',
+      id: 'shield_brute', name: 'Щитоносец', type: 'unit', rarity: 'rare', cost: 4,
+      desc: 'Живучий фронтлайн-танк с умеренным уроном.',
       stats: { hp: 1040, dmg: 108, speed: 72, range: 25, as: 0.82, target: 'ground', radius: 20, aggro: 175, projectile: 0, air: false },
       role: ['tank']
     },
     arc_shooter: {
-      id: 'arc_shooter', name: 'Arc Shooter', type: 'unit', rarity: 'common', cost: 3,
-      desc: 'Ranged archer that can shoot air and ground targets.',
+      id: 'arc_shooter', name: 'Лучник дуги', type: 'unit', rarity: 'common', cost: 3,
+      desc: 'Дальний боец, атакует воздух и землю.',
       stats: { hp: 355, dmg: 89, speed: 75, range: 205, as: 0.86, target: 'all', radius: 14, aggro: 250, projectile: 420, air: false },
       role: ['ranged', 'anti-air']
     },
     spark_mage: {
-      id: 'spark_mage', name: 'Spark Mage', type: 'unit', rarity: 'epic', cost: 4,
-      desc: 'Splash caster that bursts clustered enemies.',
+      id: 'spark_mage', name: 'Искровой маг', type: 'unit', rarity: 'epic', cost: 4,
+      desc: 'Маг с уроном по области против групп.',
       stats: { hp: 315, dmg: 84, speed: 74, range: 190, as: 0.78, target: 'all', radius: 15, aggro: 240, projectile: 350, splash: 60, air: false },
       role: ['splash', 'ranged']
     },
     sky_drone: {
-      id: 'sky_drone', name: 'Sky Drone', type: 'unit', rarity: 'rare', cost: 3,
-      desc: 'Flying support with steady single-target shots.',
+      id: 'sky_drone', name: 'Небесный дрон', type: 'unit', rarity: 'rare', cost: 3,
+      desc: 'Летающая поддержка с ровным уроном.',
       stats: { hp: 265, dmg: 73, speed: 98, range: 155, as: 1.02, target: 'all', radius: 13, aggro: 210, projectile: 460, air: true },
       role: ['air', 'ranged']
     },
     swarm_pack: {
-      id: 'swarm_pack', name: 'Swarm Pack', type: 'unit', rarity: 'common', cost: 3,
-      desc: 'Spawns 5 tiny rushers, deadly in numbers.',
+      id: 'swarm_pack', name: 'Рой', type: 'unit', rarity: 'common', cost: 3,
+      desc: 'Вызывает 5 маленьких бойцов. Силен числом.',
       stats: { hp: 100, dmg: 41, speed: 126, range: 20, as: 1.25, target: 'ground', radius: 10, aggro: 150, projectile: 0, air: false, count: 5 },
       role: ['swarm']
     },
     fire_burst: {
-      id: 'fire_burst', name: 'Fire Burst', type: 'spell', rarity: 'rare', cost: 4,
-      desc: 'Area damage spell that clears medium units and chips towers.',
+      id: 'fire_burst', name: 'Огненный всплеск', type: 'spell', rarity: 'rare', cost: 4,
+      desc: 'Заклинание по области: чистит отряды и царапает башни.',
       spell: { radius: 96, dmg: 250, towerMul: 0.48 },
       role: ['spell', 'clear']
     },
     freeze_pulse: {
-      id: 'freeze_pulse', name: 'Freeze Pulse', type: 'spell', rarity: 'epic', cost: 3,
-      desc: 'Freezes and slows enemies in a wide pulse.',
+      id: 'freeze_pulse', name: 'Импульс льда', type: 'spell', rarity: 'epic', cost: 3,
+      desc: 'Замораживает и замедляет врагов в большом радиусе.',
       spell: { radius: 112, freeze: 2.1, slowMul: 0.45 },
       role: ['spell', 'control']
     },
     lightning_pike: {
-      id: 'lightning_pike', name: 'Lightning Pike', type: 'spell', rarity: 'legendary', cost: 5,
-      desc: 'Strikes 3 nearest threats in area with chain lightning.',
+      id: 'lightning_pike', name: 'Громовой пик', type: 'spell', rarity: 'legendary', cost: 5,
+      desc: 'Бьёт 3 ближайшие цели цепной молнией.',
       spell: { radius: 240, chains: 3, dmg: 196, towerMul: 0.68 },
       role: ['spell', 'burst']
     },
     dash_totem: {
-      id: 'dash_totem', name: 'Speed Totem', type: 'spell', rarity: 'common', cost: 2,
-      desc: 'Buff zone increasing ally movement and attack speed.',
+      id: 'dash_totem', name: 'Тотем рывка', type: 'spell', rarity: 'common', cost: 2,
+      desc: 'Зона усиления: скорость и атака союзников выше.',
       spell: { radius: 125, duration: 4.4, speedMul: 1.48, asMul: 1.23 },
       role: ['spell', 'buff']
     }
@@ -1071,7 +1088,7 @@
   class InputSystem {
     constructor(canvas) {
       this.canvas = canvas;
-      this.pointer = { x: 0, y: 0, down: false, pressed: false, released: false };
+      this.pointer = { x: 0, y: 0, down: false, pressed: false, released: false, id: null };
       this.keyPressed = {};
       this.bind();
     }
@@ -1081,9 +1098,18 @@
         this.pointer.x = (e.clientX - r.left) / r.width * this.canvas.width;
         this.pointer.y = (e.clientY - r.top) / r.height * this.canvas.height;
       };
-      this.canvas.addEventListener('pointerdown', e => { upd(e); this.pointer.down = true; this.pointer.pressed = true; });
-      window.addEventListener('pointermove', e => upd(e));
-      window.addEventListener('pointerup', e => { upd(e); this.pointer.down = false; this.pointer.released = true; });
+      this.canvas.addEventListener('contextmenu', e => e.preventDefault());
+      this.canvas.addEventListener('pointerdown', e => {
+        upd(e); this.pointer.down = true; this.pointer.pressed = true; this.pointer.id = e.pointerId;
+        this.canvas.setPointerCapture?.(e.pointerId);
+        e.preventDefault();
+      }, { passive: false });
+      window.addEventListener('pointermove', e => { if (this.pointer.id == null || e.pointerId === this.pointer.id) upd(e); }, { passive: false });
+      window.addEventListener('pointerup', e => {
+        upd(e); this.pointer.down = false; this.pointer.released = true; this.pointer.id = null;
+        e.preventDefault();
+      }, { passive: false });
+      window.addEventListener('pointercancel', () => { this.pointer.down = false; this.pointer.released = true; this.pointer.id = null; });
       window.addEventListener('keydown', e => { this.keyPressed[e.key.toLowerCase()] = true; });
     }
     endFrame() {
@@ -1654,16 +1680,17 @@
       this.shake = Math.max(this.shake, 4);
     }
     playerTryDeploy(x,y) {
-      if (!this.selectedCard) return;
-      if (y < 860) { this.app.menuUI.tip('Deploy only on your side'); return; }
+      if (!this.selectedCard) return false;
+      if (y < 860) { this.app.menuUI.tip('Размещайте только на своей половине'); this.shake = Math.max(this.shake, 6); return false; }
       const lane = Math.abs(x-LANES[0]) < Math.abs(x-LANES[1]) ? 0 : 1;
       const c = CARD_LIBRARY[this.selectedCard];
-      if (c.type === 'spell') {
-        if (this.playCard(TEAM.PLAYER, this.selectedCard, x, y, lane)) this.selectedCard = null;
-      } else {
-        if (this.playCard(TEAM.PLAYER, this.selectedCard, LANES[lane], clamp(y, 930, 1480), lane)) this.selectedCard = null;
-      }
+      let ok = false;
+      if (c.type === 'spell') ok = this.playCard(TEAM.PLAYER, this.selectedCard, x, y, lane);
+      else ok = this.playCard(TEAM.PLAYER, this.selectedCard, LANES[lane], clamp(y, 930, 1480), lane);
+      if (!ok) { this.app.menuUI.tip('Нельзя разместить карту'); this.shake = Math.max(this.shake, 6); return false; }
+      this.selectedCard = null;
       this.ui.refreshHand();
+      return true;
     }
     getCrowns(side) {
       const enemy = side === TEAM.PLAYER ? TEAM.ENEMY : TEAM.PLAYER;
@@ -1675,6 +1702,7 @@
     }
     update(dt) {
       if (this.ended) return;
+      if (this.input.keyPressed['escape']) this.selectedCard = null;
       if (this.input.pointer.pressed) this.playerTryDeploy(this.input.pointer.x, this.input.pointer.y);
       const regen = this.overtime ? this.elixirRate * 2 : this.elixirRate;
       this.elixir.player = clamp(this.elixir.player + regen * dt, 0, 10);
@@ -1783,18 +1811,18 @@
       this.shell.className = 'menu-shell screen';
       this.shell.innerHTML = `
         <div class="topbar">
-          <div class="brand">Laneforge Arena</div>
-          <div class="pill" id="profilePill">Battles 0 · Wins 0</div>
+          <div class="brand">Арена Линий</div>
+          <div class="pill" id="profilePill">Бои 0 · Победы 0</div>
         </div>
         <div class="screen-content" id="contentHome"></div>
         <div class="screen-content" id="contentCards" style="display:none"></div>
         <div class="screen-content" id="contentDeck" style="display:none"></div>
         <div class="screen-content" id="contentSettings" style="display:none"></div>
         <div class="bottom-tabs">
-          <button class="tab-btn active" data-tab="home">Home</button>
-          <button class="tab-btn" data-tab="cards">Cards</button>
-          <button class="tab-btn" data-tab="deck">Deck</button>
-          <button class="tab-btn" data-tab="settings">Settings</button>
+          <button class="tab-btn active" data-tab="home">Домой</button>
+          <button class="tab-btn" data-tab="cards">Карты</button>
+          <button class="tab-btn" data-tab="deck">Колода</button>
+          <button class="tab-btn" data-tab="settings">Настройки</button>
         </div>`;
       this.tabButtons = [...this.shell.querySelectorAll('.tab-btn')];
       this.tabButtons.forEach(btn => btn.onclick = () => this.gotoTab(btn.dataset.tab));
@@ -1830,7 +1858,7 @@
     }
     refreshTop() {
       const s = this.app.save.data.stats;
-      this.shell.querySelector('#profilePill').textContent = `Battles ${s.battles} · Wins ${s.wins}`;
+      this.shell.querySelector('#profilePill').textContent = `Бои ${s.battles} · Победы ${s.wins}`;
     }
     gotoTab(tab) {
       this.tabButtons.forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
@@ -1860,15 +1888,20 @@
     createBattleOverlay(scene) {
       this.battleLayer.innerHTML = `
         <div class="hud-top">
-          <div class="hud-box" id="leftHUD">P 0 👑</div>
+          <div class="hud-box" id="leftHUD">Игрок 0 👑</div>
           <div class="hud-box timer" id="timerHUD">3:00</div>
-          <div class="hud-box" id="rightHUD">E 0 👑</div>
+          <div class="hud-box" id="rightHUD">ИИ 0 👑</div>
         </div>
-        <div class="overtime-banner" id="otBanner">OVERTIME</div>
+        <div class="overtime-banner" id="otBanner">ОВЕРТАЙМ</div>
         <div class="hand-wrap">
           <div class="hand-cards" id="handCards"></div>
-          <div class="next-card" id="nextCard">NEXT</div>
-        </div>`;
+          <div class="next-card" id="nextCard">ДАЛЕЕ</div>
+        </div>
+        <div class="drag-ghost" id="dragGhost"></div>`;
+      const toCanvas = (clientX, clientY) => {
+        const r = this.app.canvas.getBoundingClientRect();
+        return { x: (clientX - r.left) / r.width * this.app.canvas.width, y: (clientY - r.top) / r.height * this.app.canvas.height };
+      };
       const overlay = {
         root: this.battleLayer,
         timerEl: this.battleLayer.querySelector('#timerHUD'),
@@ -1877,6 +1910,7 @@
         handEl: this.battleLayer.querySelector('#handCards'),
         nextEl: this.battleLayer.querySelector('#nextCard'),
         otEl: this.battleLayer.querySelector('#otBanner'),
+        ghostEl: this.battleLayer.querySelector('#dragGhost'),
         refreshHand: () => {
           overlay.handEl.innerHTML = '';
           for (const cardId of scene.playerHand) {
@@ -1889,18 +1923,48 @@
             const c = el.querySelector('canvas');
             scene.app.cardRenderer.drawCardArt(c.getContext('2d'), cardId, 0, 0, c.width, c.height, performance.now()*0.001);
             el.onclick = () => {
-              if (!canAfford) { this.tip('Not enough elixir'); return; }
+              if (!canAfford) { this.tip('Недостаточно энергии'); return; }
               scene.selectedCard = scene.selectedCard === cardId ? null : cardId;
               overlay.refreshHand();
+            };
+            el.onpointerdown = (ev) => {
+              if (!canAfford) return;
+              ev.preventDefault();
+              scene.drag = { cardId, sourceEl: el, pointerId: ev.pointerId };
+              el.classList.add('dragging');
+              overlay.ghostEl.style.display = 'block';
+              overlay.ghostEl.innerHTML = `<div class="gem">${card.cost}</div><canvas width="120" height="70"></canvas><div class="name" style="position:absolute;left:6px;right:6px;bottom:6px;font-size:10px;text-align:center">${card.name}</div>`;
+              const gc = overlay.ghostEl.querySelector('canvas');
+              gc.style.position = 'absolute'; gc.style.left = '6px'; gc.style.top = '22px'; gc.style.width = '108px'; gc.style.height = '64px';
+              scene.app.cardRenderer.drawCardArt(gc.getContext('2d'), cardId, 0, 0, 120, 70, performance.now()*0.001);
             };
             overlay.handEl.appendChild(el);
           }
           const next = scene.playerDeck[scene.playerNextIndex % scene.playerDeck.length];
           const n = document.createElement('canvas'); n.width = 58; n.height = 58;
           scene.app.cardRenderer.drawCardArt(n.getContext('2d'), next, 0, 0, 58, 58, performance.now()*0.001);
-          overlay.nextEl.innerHTML = '<div>NEXT</div>';
+          overlay.nextEl.innerHTML = '<div>ДАЛЕЕ</div>';
           overlay.nextEl.appendChild(n);
-          const e = document.createElement('div'); e.textContent = `Elixir ${scene.elixir.player.toFixed(1)}`; e.style.fontWeight = '800'; e.style.marginTop = '2px'; overlay.nextEl.appendChild(e);
+          const e = document.createElement('div'); e.textContent = `Энергия ${scene.elixir.player.toFixed(1)}/10`; e.style.fontWeight = '800'; e.style.marginTop = '2px'; overlay.nextEl.appendChild(e);
+        },
+        moveDrag: (clientX, clientY) => {
+          if (!scene.drag) return;
+          const p = toCanvas(clientX, clientY);
+          this.app.input.pointer.x = p.x; this.app.input.pointer.y = p.y;
+          const rr = this.battleLayer.getBoundingClientRect();
+          overlay.ghostEl.style.left = `${clientX - rr.left}px`;
+          overlay.ghostEl.style.top = `${clientY - rr.top}px`;
+        },
+        endDrag: (clientX, clientY) => {
+          if (!scene.drag) return;
+          const p = toCanvas(clientX, clientY);
+          scene.selectedCard = scene.drag.cardId;
+          const ok = scene.playerTryDeploy(p.x, p.y);
+          scene.drag.sourceEl?.classList.remove('dragging');
+          overlay.ghostEl.style.display = 'none';
+          scene.drag = null;
+          if (!ok) scene.selectedCard = null;
+          overlay.refreshHand();
         },
         setOvertime: v => overlay.otEl.classList.toggle('show', v),
         updateHUD: () => {
@@ -1908,27 +1972,30 @@
           const m = (t / 60) | 0;
           const s = ((t % 60) | 0).toString().padStart(2,'0');
           overlay.timerEl.textContent = `${m}:${s}`;
-          overlay.leftEl.textContent = `P ${scene.getCrowns(TEAM.PLAYER)} 👑`;
-          overlay.rightEl.textContent = `E ${scene.getCrowns(TEAM.ENEMY)} 👑`;
+          overlay.leftEl.textContent = `Игрок ${scene.getCrowns(TEAM.PLAYER)} 👑`;
+          overlay.rightEl.textContent = `ИИ ${scene.getCrowns(TEAM.ENEMY)} 👑`;
           overlay.refreshHand();
         },
         remove: () => { this.battleLayer.innerHTML = ''; }
       };
+      window.addEventListener('pointermove', (e) => overlay.moveDrag(e.clientX, e.clientY), { passive: true });
+      window.addEventListener('pointerup', (e) => overlay.endDrag(e.clientX, e.clientY), { passive: true });
       overlay.refreshHand();
       return overlay;
     }
     showResults(stats) {
       const crowns = `${stats.crowns.player} - ${stats.crowns.enemy}`;
+      const resText = stats.result === 'victory' ? 'ПОБЕДА' : stats.result === 'defeat' ? 'ПОРАЖЕНИЕ' : 'НИЧЬЯ';
       this.results.classList.add('show');
       this.results.innerHTML = `
         <div class="result-card">
-          <h2>${stats.result.toUpperCase()}</h2>
-          <p>Crowns: <b>${crowns}</b></p>
-          <p>Damage dealt: ${Math.round(stats.damagePlayer)}</p>
-          <p>Cards played: ${stats.cardsPlayer}</p>
+          <h2>${resText}</h2>
+          <p>Короны: <b>${crowns}</b></p>
+          <p>Нанесено урона: ${Math.round(stats.damagePlayer)}</p>
+          <p>Карт разыграно: ${stats.cardsPlayer}</p>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
-            <button class="btn" id="playAgainBtn">Play Again</button>
-            <button class="btn secondary" id="backMenuBtn">Main Menu</button>
+            <button class="btn" id="playAgainBtn">Сыграть ещё</button>
+            <button class="btn secondary" id="backMenuBtn">В меню</button>
           </div>
         </div>`;
       this.results.querySelector('#playAgainBtn').onclick = () => {
@@ -1967,8 +2034,8 @@
         <div class="section-title">CURRENT DECK</div>
         <div class="card-panel deck-strip" id="homeDeck"></div>
         <div class="home-stats">
-          <div class="home-stat"><div class="v">${s.wins}</div><div class="k">Wins</div></div>
-          <div class="home-stat"><div class="v">${s.battles}</div><div class="k">Battles</div></div>
+          <div class="home-stat"><div class="v">${s.wins}</div><div class="k">Победы</div></div>
+          <div class="home-stat"><div class="v">${s.battles}</div><div class="k">Бои</div></div>
           <div class="home-stat"><div class="v">${avg}</div><div class="k">Avg Cost</div></div>
         </div>`;
       this.root.querySelector('#playBtn').onclick = () => this.app.startBattle();
@@ -2173,8 +2240,8 @@
               <div>Units ${sum.units} / Spells ${sum.spells}</div>
             </div>
             <div class="deck-actions">
-              <button class="btn" id="saveDeckBtn">Save Deck</button>
-              <button class="btn secondary" id="recommendBtn">Recommended Deck</button>
+              <button class="btn" id="saveDeckBtn">Save Колода</button>
+              <button class="btn secondary" id="recommendBtn">Recommended Колода</button>
             </div>
           </div>
           <div class="section-title">COLLECTION</div>
@@ -2230,37 +2297,37 @@
 
       const row1 = document.createElement('div');
       row1.className = 'setting-row';
-      row1.innerHTML = `<h4>Audio</h4><p>Toggle battle and UI sound effects.</p><div class="toggle-line"><span>SFX</span></div>`;
+      row1.innerHTML = `<h4>Звук</h4><p>Переключение звуков интерфейса и боя.</p><div class="toggle-line"><span>Звуки</span></div>`;
       row1.querySelector('.toggle-line').appendChild(this.makeSwitch(cfg.sfx, v => this.app.save.setSetting('sfx', v)));
       list.appendChild(row1);
 
       const row2 = document.createElement('div');
       row2.className = 'setting-row';
-      row2.innerHTML = `<h4>Performance</h4><p>Controls particles and visual density.</p><select class="select"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>`;
+      row2.innerHTML = `<h4>Качество</h4><p>Настройка плотности частиц и теней.</p><select class="select"><option value="low">Низкое</option><option value="medium">Среднее</option><option value="high">Высокое</option></select>`;
       const q = row2.querySelector('select'); q.value = cfg.quality;
       q.onchange = () => this.app.save.setSetting('quality', q.value);
       list.appendChild(row2);
 
       const row3 = document.createElement('div');
       row3.className = 'setting-row';
-      row3.innerHTML = `<h4>AI Difficulty</h4><p>Adjust opponent decision speed and pressure.</p><select class="select"><option value="easy">Easy</option><option value="normal">Normal</option><option value="hard">Hard</option></select>`;
+      row3.innerHTML = `<h4>Сложность ИИ</h4><p>Скорость решений и давление противника.</p><select class="select"><option value="easy">Легко</option><option value="normal">Нормально</option><option value="hard">Сложно</option></select>`;
       const d = row3.querySelector('select'); d.value = cfg.difficulty;
       d.onchange = () => this.app.save.setSetting('difficulty', d.value);
       list.appendChild(row3);
 
       const row4 = document.createElement('div');
       row4.className = 'setting-row';
-      row4.innerHTML = `<h4>Accessibility</h4><p>Switch team colors for colorblind mode.</p><div class="toggle-line"><span>Colorblind mode</span></div>`;
+      row4.innerHTML = `<h4>Доступность</h4><p>Смена цветов команд для удобства.</p><div class="toggle-line"><span>Режим дальтонизма</span></div>`;
       row4.querySelector('.toggle-line').appendChild(this.makeSwitch(cfg.colorblind, v => this.app.save.setSetting('colorblind', v)));
       list.appendChild(row4);
 
       const row5 = document.createElement('div');
       row5.className = 'setting-row';
-      row5.innerHTML = `<h4>Save Data</h4><p>Erase deck/settings/stat profile.</p><button class="btn warn">Reset Save Data</button>`;
+      row5.innerHTML = `<h4>Данные</h4><p>Удалить колоду, настройки и статистику.</p><button class="btn warn">Сбросить сохранение</button>`;
       row5.querySelector('button').onclick = () => {
-        if (confirm('Reset all save data?')) {
+        if (confirm('Сбросить все данные?')) {
           this.app.save.reset();
-          this.menu.tip('Save reset. Reloading UI...');
+          this.menu.tip('Данные сброшены. Обновление интерфейса...');
           this.app.reloadMenu();
         }
       };
@@ -2294,7 +2361,14 @@
       window.addEventListener('keydown', (e) => {
         if (e.key.toLowerCase() === 'd') {
           this.save.setDebug(!this.save.data.settings.debug);
-          this.menuUI.tip(`Debug ${this.save.data.settings.debug ? 'ON':'OFF'}`);
+          this.menuUI.tip(`Отладка ${this.save.data.settings.debug ? 'ВКЛ':'ВЫКЛ'}`);
+        }
+      });
+      window.addEventListener('contextmenu', (e) => {
+        if (this.state === APP_STATES.BATTLE && this.scene?.selectedCard) {
+          e.preventDefault();
+          this.scene.selectedCard = null;
+          this.scene.ui.refreshHand();
         }
       });
     }
