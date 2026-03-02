@@ -4463,4 +4463,422 @@ class App {
 window.app=new App();
 
 </script>
+
+<script>
+(function(){
+  const app = window.app;
+  if(!app) return;
+
+  const style = document.createElement('style');
+  style.textContent = `
+  .screen{transition:none !important}
+  .screen.fx-enter{pointer-events:none}
+  .screen.fx-enter-active{pointer-events:auto}
+  .tab-extra{font-size:11px}
+  .energy-bar.super{box-shadow:0 0 16px rgba(34,211,238,.35)}
+  .energy-fill.pulse{filter:brightness(1.25)}
+  .placement-overlay{position:absolute;inset:72px 0 100px 0;pointer-events:none;z-index:20;display:none}
+  .placement-overlay.show{display:block}
+  .results-panel h2{margin:0 0 6px 0}
+  .hud-top{position:absolute;left:8px;right:8px;top:8px;display:flex;justify-content:space-between;z-index:25;pointer-events:none}
+  .hud-chip{background:rgba(15,23,42,.85);border:1px solid #334155;border-radius:12px;padding:6px 10px;font-weight:700;font-size:12px}
+  .chest-card{background:linear-gradient(180deg,#1e293b,#0f172a);padding:10px;border:1px solid #334155;border-radius:10px;margin-bottom:8px}
+  .offer{padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;margin-bottom:8px}
+  .quest{padding:10px;border:1px solid #334155;border-radius:10px;margin-bottom:8px}
+  `;
+  document.head.appendChild(style);
+
+  class TweenManager {
+    constructor(){ this.items=[]; }
+    ease(name,t){
+      const map={linear:t=>t,outCubic:t=>1-Math.pow(1-t,3),inOut:t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2,outBack:t=>1+2.4*Math.pow(t-1,3)+1.4*Math.pow(t-1,2)};
+      return (map[name]||map.outCubic)(Math.max(0,Math.min(1,t)));
+    }
+    to(obj,key,to,duration=.35,ease='outCubic',delay=0,onDone){
+      this.items.push({obj,key,from:obj[key],to,duration,elapsed:0,ease,delay,onDone});
+    }
+    tick(dt){
+      this.items=this.items.filter(t=>{
+        if(t.delay>0){t.delay-=dt;return true;}
+        t.elapsed+=dt; const p=this.ease(t.ease,t.elapsed/t.duration);
+        t.obj[t.key]=t.from+(t.to-t.from)*p;
+        if(t.elapsed>=t.duration){t.obj[t.key]=t.to; if(t.onDone)t.onDone(); return false;}
+        return true;
+      });
+    }
+  }
+
+  app.tweens = new TweenManager();
+
+  const origShow = app.screens.show.bind(app.screens);
+  app.screens.show = function(id){
+    const from=this.current?this.map[this.current]:null;
+    const to=this.map[id];
+    if(!to) return;
+    if(from===to) return;
+    if(from){from.style.opacity=1;from.style.transform='translateX(0)';from.classList.remove('active');}
+    to.classList.add('active');
+    to.style.opacity=0; to.style.transform='translateX(24px)';
+    const st={o:0,x:24};
+    app.tweens.to(st,'o',1,.28,'outCubic');
+    app.tweens.to(st,'x',0,.34,'outBack',0,()=>{});
+    const anim=()=>{to.style.opacity=st.o.toFixed(3);to.style.transform=`translateX(${st.x}px)`; if(st.o<0.999) requestAnimationFrame(anim);};
+    requestAnimationFrame(anim);
+    this.current=id;
+  };
+
+  const p=app.state.state.profile;
+  const s=app.state.state;
+  s.meta = s.meta||{};
+  s.meta.history = s.meta.history||[];
+  s.meta.chests = s.meta.chests||{slots:[null,null,null,null], opening:null};
+  s.meta.quests = s.meta.quests||{daily:[],weekly:[],lastDaily:'',lastWeekly:''};
+  s.meta.achievements = s.meta.achievements||{};
+  s.meta.shop = s.meta.shop||{seed:'',claimedGift:false,bought:{}};
+
+  const nowDate = ()=>new Date().toISOString().slice(0,10);
+  const weekKey = ()=>{ const d=new Date(); const onejan=new Date(d.getFullYear(),0,1); return d.getFullYear()+'-W'+Math.ceil((((d-onejan)/86400000)+onejan.getDay()+1)/7); };
+
+  function ensureQuests(){
+    const q=s.meta.quests;
+    if(q.lastDaily!==nowDate()){
+      q.lastDaily=nowDate();
+      q.daily=[
+        {id:'play2',title:'Сыграть 2 боя',goal:2,progress:0,reward:{gold:120,cups:0}},
+        {id:'cast8',title:'Разыграть 8 карт',goal:8,progress:0,reward:{gold:90,cups:0}},
+        {id:'win1',title:'Победить 1 раз',goal:1,progress:0,reward:{gold:150,cups:8}},
+      ];
+    }
+    if(q.lastWeekly!==weekKey()){
+      q.lastWeekly=weekKey();
+      q.weekly=[
+        {id:'wins8',title:'Победить 8 раз',goal:8,progress:0,reward:{gold:550,cups:30,chest:'Ларец Бури'}},
+        {id:'dmg',title:'Нанести 9000 урона башням',goal:9000,progress:0,reward:{gold:480,cups:24}}
+      ];
+    }
+  }
+  ensureQuests();
+
+  function chestReward(type){
+    const mul={"Сфера Искр":1,"Ларец Бури":1.5,"Кристальный Ящик":2.2}[type]||1;
+    const gold=Math.floor((45+Math.random()*90)*mul);
+    const copies=Math.floor((3+Math.random()*5)*mul);
+    const pool=CARD_DB[Math.floor(Math.random()*CARD_DB.length)].id;
+    return {gold,copies,card:pool};
+  }
+  function addChest(type){
+    const slots=s.meta.chests.slots;
+    const idx=slots.findIndex(v=>!v);
+    if(idx<0){ app.ui.toast('Все слоты сундуков заняты'); return false; }
+    slots[idx]={type,remain: type==='Сфера Искр'?20: type==='Ларец Бури'?45:90,started:false};
+    app.state.emit();
+    return true;
+  }
+
+  const origBuildNav=app.buildNav.bind(app);
+  app.buildNav=function(parent){
+    origBuildNav(parent);
+    const nav=parent.querySelector('.nav');
+    if(!nav || nav.dataset.extended) return;
+    nav.dataset.extended='1';
+    const extra=[['upgrades','Улучшения','⬆️'],['chests','Сундуки','📦'],['quests','Квесты','✅'],['achievements','Достижения','🏅'],['shop','Магазин','🛒']];
+    for(const [id,txt,ic] of extra){const b=document.createElement('button');b.className='tab-extra';b.innerHTML=`<div>${ic}</div><div>${txt}</div>`;b.onclick=()=>{for(const bb of nav.children)bb.classList.remove('active');b.classList.add('active');app.screens.show(id);};nav.appendChild(b);}
+  };
+
+  const origBuildUI=app.buildUI.bind(app);
+  app.buildUI=function(){
+    origBuildUI();
+    const mk=(id,title,html)=>{
+      if(this.ui.map[id]) return;
+      const sc=this.ui.makeScreen(id); this.buildTop(sc);
+      const c=document.createElement('div'); c.className='main-content'; c.innerHTML=`<div class="card"><h3>${title}</h3></div><div style="height:8px"></div>${html}`;
+      sc.appendChild(c); this.buildNav(sc);
+    };
+    mk('upgrades','Прокачка карт','<div id="upgradeList"></div>');
+    mk('chests','Сундуки','<div id="chestSlots"></div><div class="card"><h4>Открытие</h4><div id="chestOpen"></div></div>');
+    mk('quests','Квесты','<div class="card"><h4>Ежедневные</h4><div id="dailyQuests"></div></div><div style="height:8px"></div><div class="card"><h4>Еженедельные</h4><div id="weeklyQuests"></div></div>');
+    mk('achievements','Достижения','<div id="achievementList"></div>');
+    mk('shop','Магазин','<div id="shopList"></div>');
+
+    const battle=this.ui.map.battle;
+    if(!battle.querySelector('.placement-overlay')){
+      const ov=document.createElement('canvas');ov.className='placement-overlay';ov.id='placementOverlay';battle.appendChild(ov);
+      const hud=document.createElement('div');hud.className='hud-top';hud.innerHTML='<div class="hud-chip" id="battleTimer">03:00</div><div class="hud-chip" id="battleCrowns">👑 0 : 0</div>';battle.appendChild(hud);
+    }
+  };
+
+  document.getElementById('frame').innerHTML='';
+  app.ui.map={};
+  app.buildUI();
+  app.renderDynamic();
+
+  app.battle.regen=0.65; app.battle.enemyRegen=0.62;
+  app.battle.energyLock=0; app.battle.enemyLock=0; app.battle.cardCd={}; app.battle.enemyCardCd={};
+  app.battle.maxTime=180; app.battle.overtime=90; app.battle.inOvertime=false;
+
+  const origStart=app.battle.start.bind(app.battle);
+  app.battle.start=function(){
+    origStart();
+    this.energyLock=0;this.enemyLock=0;this.cardCd={};this.enemyCardCd={};
+    this.maxTime=180;this.inOvertime=false;this.matchEnded=false;
+    if(this.ui.energyFill)this.ui.energyFill.parentElement.classList.add('super');
+  };
+
+  app.battle.cleanupDead=function(){
+    const before=this.unitSystem.units.length;
+    this.unitSystem.units=this.unitSystem.units.filter(u=>!(u.dead&&u.deathTimer<=0));
+    return before-this.unitSystem.units.length;
+  };
+
+  const origApplyDamage=app.battle.applyDamage.bind(app.battle);
+  app.battle.applyDamage=function(target,damage,fromTeam){
+    origApplyDamage(target,damage,fromTeam);
+    if(target&&target.id&&target.hp<=0){
+      target.dead=true;target.deathTimer=0.22;target.vy=-26;target.rot=0;
+    }
+  };
+
+  function fmt(sec){sec=Math.max(0,Math.floor(sec));const m=Math.floor(sec/60);const s=sec%60;return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;}
+  function crowns(){
+    const t=app.battle.towerSystem.towers;
+    const p=t.filter(x=>x.team==='player'&&x.hp<=0).length;
+    const e=t.filter(x=>x.team==='enemy'&&x.hp<=0).length;
+    return {player:e,enemy:p};
+  }
+
+  const oldUpdate=app.battle.update.bind(app.battle);
+  app.battle.update=function(dt){
+    if(this.matchEnded)return;
+    this.time+=dt;
+    this.energyLock=Math.max(0,this.energyLock-dt); this.enemyLock=Math.max(0,this.enemyLock-dt);
+    const regMul=this.inOvertime?1.25:1;
+    if(this.energyLock<=0)this.energy=Math.min(this.maxEnergy,this.energy+this.regen*regMul*dt);
+    if(this.enemyLock<=0)this.enemyEnergy=Math.min(this.maxEnergy,this.enemyEnergy+this.enemyRegen*regMul*dt);
+    this.ui.updateEnergy(this.energy,this.maxEnergy);
+    if(this.ui.energyFill){
+      this.ui.energyFill.classList.toggle('pulse',Math.floor(performance.now()/200)%2===0&&this.energy<10&&this.energyLock<=0);
+      this.ui.energyFill.parentElement.classList.toggle('super',this.energy>=9.99);
+    }
+
+    for(const k in this.cardCd){this.cardCd[k]=Math.max(0,this.cardCd[k]-dt);}
+    for(const k in this.enemyCardCd){this.enemyCardCd[k]=Math.max(0,this.enemyCardCd[k]-dt);}
+
+    const units=this.unitSystem.units;
+    for(const u of units){
+      if(u.dead){u.deathTimer=(u.deathTimer||0)-dt;u.y+=(u.vy||-20)*dt;u.rot=(u.rot||0)+dt*6;continue;}
+      u.anim=(u.anim||0)+dt*8;u.cooldown-=dt;u.flash=Math.max(0,u.flash-dt*6);
+      const enemies=this.unitSystem.units.filter(e=>e.team!==u.team&&!e.dead).concat(this.towerSystem.towers.filter(t=>t.team!==u.team&&t.hp>0));
+      let nearest=null,nd=1e9;
+      for(const e of enemies){const d=Math.hypot(e.x-u.x,e.y-u.y);if(d<nd){nd=d;nearest=e;}}
+      if(nearest && nd<=u.range){if(u.cooldown<=0){u.cooldown=u.attackSpeed; this.projectiles.shoot(u,nearest,u.damage,u.team,'arrow'); this.particles.spawn(nearest.x,nearest.y,'rgba(255,255,255,.6)',4);}}
+      else if(nearest){const ang=Math.atan2(nearest.y-u.y,nearest.x-u.x);u.x+=Math.cos(ang)*u.speed*dt;u.y+=Math.sin(ang)*u.speed*dt;}
+    }
+    for(const t of this.towerSystem.towers){if(t.hp<=0)continue;t.cool-=dt;if(t.cool>0)continue;const enemies=units.filter(u=>u.team!==t.team&&!u.dead);let tar=null,nd=1e9;for(const e of enemies){const d=Math.hypot(e.x-t.x,e.y-t.y);if(d<t.range&&d<nd){nd=d;tar=e;}}if(tar){t.cool=.95;this.projectiles.shoot(t,tar,t.damage,t.team,'arrow');}}
+    this.projectiles.update(dt,this); this.particles.update(dt);
+    this.cleanupDead();
+
+    const mainP=this.towerSystem.towers.find(t=>t.team==='player'&&t.main);
+    const mainE=this.towerSystem.towers.find(t=>t.team==='enemy'&&t.main);
+    if(mainP.hp<=0||mainE.hp<=0){
+      const win=mainE.hp<=0 && mainP.hp>0;
+      return this.endMatch(win,'Башня короля уничтожена');
+    }
+
+    const left=this.maxTime-this.time;
+    if(!this.inOvertime && left<=0){this.inOvertime=true;this.time=0;app.ui.toast('Овертайм! Регенерация ускорена');app.audio.cast();}
+    else if(this.inOvertime && left<=0){
+      const c=crowns();
+      let win=false;
+      if(c.player!==c.enemy) win=c.player>c.enemy;
+      else win=mainE.hp<mainP.hp;
+      return this.endMatch(win,'Время вышло');
+    }
+
+    const t=document.getElementById('battleTimer'); if(t)t.textContent=fmt(left);
+    const cr=document.getElementById('battleCrowns'); const c=crowns(); if(cr)cr.textContent=`👑 ${c.player} : ${c.enemy}`;
+    this.ai.update(dt); this.render();
+  };
+
+  app.battle.endMatch=function(win,reason){
+    if(this.matchEnded) return; this.matchEnded=true; this.running=false;
+    app.onBattleFinished(win,reason);
+  };
+
+  const oldDeploy=app.battle.deployUnit.bind(app.battle);
+  app.battle.deployUnit=function(team,cardId,x,y){
+    const cd=team==='player'?this.cardCd:this.enemyCardCd;
+    const lockKey=team==='player'?'energyLock':'enemyLock';
+    if((cd[cardId]||0)>0)return false;
+    const ok=oldDeploy(team,cardId,x,y);
+    if(ok){cd[cardId]=1.0;this[lockKey]=0.55; if(team==='player')questEvent('playCard',1);}
+    return ok;
+  };
+  const oldCast=app.battle.castSpell.bind(app.battle);
+  app.battle.castSpell=function(team,cardId,x,y){
+    const cd=team==='player'?this.cardCd:this.enemyCardCd;
+    const lockKey=team==='player'?'energyLock':'enemyLock';
+    if((cd[cardId]||0)>0)return false;
+    const ok=oldCast(team,cardId,x,y);
+    if(ok){cd[cardId]=1.15;this[lockKey]=0.55; if(team==='player')questEvent('playCard',1);}
+    return ok;
+  };
+
+  app.ui.updateEnergy=function(v,max){
+    if(!this.energyFill)return;
+    this.energyFill.style.width=(v/max*100)+'%';
+    this.energyLabel.textContent=`Энергия: ${v.toFixed(1)}/${max}`;
+  };
+
+  const ov=document.getElementById('placementOverlay');
+  function drawOverlay(x,y,valid){
+    if(!ov) return;
+    const r=ov.getBoundingClientRect();ov.width=r.width;ov.height=r.height;
+    const c=ov.getContext('2d'); c.clearRect(0,0,ov.width,ov.height);
+    c.fillStyle='rgba(56,189,248,.11)'; c.fillRect(0,ov.height*0.55,ov.width,ov.height*0.45);
+    c.strokeStyle=valid?'rgba(34,197,94,.8)':'rgba(239,68,68,.85)'; c.lineWidth=2; c.beginPath(); c.arc(x,y,26,0,Math.PI*2); c.stroke();
+  }
+
+  app.bindBattleInput=function(){
+    const canvas=this.battle.canvas;
+    const state={drag:false,card:null};
+    const getPos=e=>{const r=canvas.getBoundingClientRect();return {x:e.clientX-r.left,y:e.clientY-r.top};};
+    const valid=y=>y>canvas.height*0.55;
+    canvas.oncontextmenu=e=>{e.preventDefault();this.input.cancel();if(ov)ov.classList.remove('show');};
+    canvas.addEventListener('pointerdown',e=>{
+      if(this.input.selectedCard){state.drag=true;state.card=this.input.selectedCard; if(ov)ov.classList.add('show'); const p=getPos(e); drawOverlay(p.x,p.y,valid(p.y));}
+    });
+    canvas.addEventListener('pointermove',e=>{if(!state.drag||!state.card)return;const p=getPos(e);drawOverlay(p.x,p.y,valid(p.y));});
+    canvas.addEventListener('pointerup',e=>{
+      const p=getPos(e);
+      if(this.input.selectedCard){
+        if(!valid(p.y)){this.ui.toast('Нельзя ставить карту в зоне врага');}
+        else {
+          const ok=this.battle.placePlayerCard(this.input.selectedCard.id,p.x,p.y);
+          if(!ok)this.ui.toast('Недостаточно энергии или карта на перезарядке');
+        }
+      }
+      state.drag=false; state.card=null; if(ov)ov.classList.remove('show');
+    });
+  };
+
+  const achDefs=[
+    {id:'wins',title:'Победы',tiers:[1,10,30],reward:[50,180,500]},
+    {id:'cups',title:'Путь кубков',tiers:[200,800,1600],reward:[80,220,600]},
+    {id:'upgrade',title:'Улучшения карт',tiers:[1,10,25],reward:[50,130,360]}
+  ];
+
+  function questEvent(type,val){
+    const q=s.meta.quests;
+    const map={playCard:['cast8'],win:['win1','wins8'],towerDmg:['dmg'],battle:['play2']};
+    for(const id of map[type]||[]){
+      for(const listName of ['daily','weekly']){
+        const it=q[listName].find(x=>x.id===id); if(!it||it.claimed) continue; it.progress=Math.min(it.goal,it.progress+val);
+      }
+    }
+  }
+
+  const origOnBattleFinished=app.onBattleFinished.bind(app);
+  app.onBattleFinished=function(win,reason='Бой завершён'){
+    this.trophy.onBattleEnd(win);
+    questEvent('battle',1); if(win) questEvent('win',1);
+    const chestTypes=['Сфера Искр','Ларец Бури','Кристальный Ящик'];
+    if(win) addChest(chestTypes[Math.floor(Math.random()*chestTypes.length)]);
+    s.meta.history.unshift({time:Date.now(),win,delta:win?30:-18,arena:this.arenaSystem.getSelected().name,reason});
+    s.meta.history=s.meta.history.slice(0,20);
+    const rewardGold=win?90:35; this.state.addGold(rewardGold);
+    this.showModal(`<div class='results-panel'><h2>${win?'ПОБЕДА':'ПОРАЖЕНИЕ'}</h2><div class='small'>${reason}</div><p>Кубки: ${win?'+30':'-18'}</p><p>Золото: +${rewardGold}</p><div class='row'><button class='hero-button' id='again'>Сыграть ещё</button><button class='hero-button' id='menuBack'>В меню</button></div></div>`);
+    document.getElementById('again').onclick=()=>{this.modal.classList.remove('show');this.startBattle();};
+    document.getElementById('menuBack').onclick=()=>{this.modal.classList.remove('show');this.screens.show('menu');};
+    this.state.emit();
+  };
+
+  const oldOpenProfile=app.openProfile.bind(app);
+  app.openProfile=function(){
+    const h=s.meta.history.slice(0,8).map(i=>`<div class='small'>${new Date(i.time).toLocaleString('ru-RU')} · ${i.win?'Победа':'Поражение'} (${i.delta>0?'+':''}${i.delta}) · ${i.arena}</div>`).join('');
+    const p=this.state.get('profile');
+    this.showModal(`<h2>Профиль</h2><div class='card'><div>Ник: <b>${p.name}</b></div><div>Уровень: ${p.level}</div><div>Кубки: ${p.cups}</div><div>Побед/Поражений: ${p.wins}/${p.losses}</div></div><div style='height:8px'></div><div class='card'><h4>История боёв</h4>${h||'<div class="small">Пока пусто</div>'}</div><div style='height:8px'></div><button class='hero-button' id='closeModalBtn'>Закрыть</button>`);
+    document.getElementById('closeModalBtn').onclick=()=>this.modal.classList.remove('show');
+  };
+
+  app.renderUpgrades=function(){
+    const el=document.getElementById('upgradeList'); if(!el)return; el.innerHTML='';
+    for(const c of CARD_DB.slice(0,60)){
+      const d=this.state.get('cards.'+c.id); if(!d) continue;
+      const can=d.copies>=this.upgrade.copiesNeeded(c.id)&&this.state.get('profile.gold')>=this.upgrade.goldNeeded(c.id);
+      const row=document.createElement('div'); row.className='offer';
+      row.innerHTML=`<div class='row between'><b>${c.name}</b><span>Ур. ${d.level}</span></div><div class='small'>Копии: ${d.copies}/${this.upgrade.copiesNeeded(c.id)} · Цена: ${this.upgrade.goldNeeded(c.id)}</div><button ${can?'':'disabled'}>Улучшить</button>`;
+      row.querySelector('button').onclick=()=>{if(this.upgrade.upgrade(c.id)){questEvent('upgrade',1);this.ui.toast('Улучшено');}else this.ui.toast('Не хватает золота/копий');};
+      el.appendChild(row);
+    }
+  };
+
+  app.renderChests=function(){
+    const slots=document.getElementById('chestSlots'); if(!slots)return;
+    slots.innerHTML='';
+    s.meta.chests.slots.forEach((c,i)=>{
+      const d=document.createElement('div'); d.className='chest-card';
+      if(!c){ d.innerHTML=`<div>Слот ${i+1}: пусто</div>`; slots.appendChild(d); return; }
+      d.innerHTML=`<div class='row between'><b>${c.type}</b><span>${c.started?Math.ceil(c.remain)+'с':'Готов к запуску'}</span></div><div class='row'><button id='start${i}'>${c.started?'Ускорить (бесплатно)':'Открывать'}</button></div>`;
+      d.querySelector('button').onclick=()=>{
+        if(!c.started){c.started=true;} else c.remain=0;
+        if(c.remain<=0){const rw=chestReward(c.type);app.state.addGold(rw.gold);app.state.state.cards[rw.card].copies+=rw.copies; app.ui.toast(`Сундук: +${rw.gold} золота, +${rw.copies} ${app.cardSystem.getById(rw.card).name}`); s.meta.chests.slots[i]=null;}
+        app.state.emit();
+      };
+      slots.appendChild(d);
+    });
+  };
+
+  app.renderQuests=function(){
+    ensureQuests();
+    const rd=(arr,id)=>{const e=document.getElementById(id); if(!e)return; e.innerHTML=''; arr.forEach(q=>{const can=q.progress>=q.goal&&!q.claimed; const d=document.createElement('div'); d.className='quest'; d.innerHTML=`<div class='row between'><b>${q.title}</b><span>${q.progress}/${q.goal}</span></div><div class='progress'><div style='width:${Math.min(100,q.progress/q.goal*100)}%'></div></div><div class='small'>Награда: ${q.reward.gold} золота${q.reward.cups?', '+q.reward.cups+' кубков':''}</div><button ${can?'':'disabled'}>${q.claimed?'Получено':'Забрать'}</button>`; d.querySelector('button').onclick=()=>{q.claimed=true;app.state.addGold(q.reward.gold);if(q.reward.cups)app.state.addCups(q.reward.cups);if(q.reward.chest)addChest(q.reward.chest);app.ui.toast('Награда квеста получена');app.state.emit();}; e.appendChild(d);});};
+    rd(s.meta.quests.daily,'dailyQuests'); rd(s.meta.quests.weekly,'weeklyQuests');
+  };
+
+  app.renderAchievements=function(){
+    const e=document.getElementById('achievementList'); if(!e)return; e.innerHTML='';
+    const val={wins:s.profile.wins,cups:s.profile.cups,upgrade:(s.meta.history.filter(x=>x.reason==='upgrade').length)};
+    achDefs.forEach(a=>{
+      const st=s.meta.achievements[a.id]||{tier:0,claimed:0};
+      const need=a.tiers[st.tier]||null; const done=need!==null && (a.id==='upgrade'?0:val[a.id])>=need;
+      const d=document.createElement('div'); d.className='offer';
+      d.innerHTML=`<div class='row between'><b>${a.title}</b><span>Этап ${st.tier+1}/${a.tiers.length}</span></div><div class='small'>Требование: ${need??'Выполнено'} · Прогресс: ${val[a.id]||0}</div><button ${done?'':'disabled'}>${need?'Забрать '+a.reward[st.tier]+' золота':'Готово'}</button>`;
+      d.querySelector('button').onclick=()=>{if(!done)return; app.state.addGold(a.reward[st.tier]); s.meta.achievements[a.id]={tier:st.tier+1}; app.ui.toast('Достижение получено'); app.state.emit();};
+      e.appendChild(d);
+    });
+  };
+
+  function seeded(seed){let h=2166136261;for(let i=0;i<seed.length;i++){h^=seed.charCodeAt(i);h=Math.imul(h,16777619);}return ()=>((h=Math.imul(h^h>>>15,2246822507))>>>0)/4294967295;}
+  app.renderShop=function(){
+    const el=document.getElementById('shopList'); if(!el)return;
+    const seed=nowDate(); const rng=seeded(seed);
+    if(s.meta.shop.seed!==seed){s.meta.shop.seed=seed;s.meta.shop.claimedGift=false;s.meta.shop.bought={};}
+    const offers=[
+      {id:'gift',title:'Ежедневный подарок',desc:'Бесплатно 120 золота',price:0,reward:{gold:120}},
+      {id:'card1',title:'Пачка карт',desc:'Случайные копии',price:Math.floor(60+rng()*80),reward:{copies:6,card:CARD_DB[Math.floor(rng()*CARD_DB.length)].id}},
+      {id:'card2',title:'Редкая поставка',desc:'Больше копий и золота',price:Math.floor(120+rng()*120),reward:{copies:10,gold:80,card:CARD_DB[Math.floor(rng()*CARD_DB.length)].id}},
+    ];
+    el.innerHTML='';
+    offers.forEach(o=>{const bought=s.meta.shop.bought[o.id];const d=document.createElement('div');d.className='offer';d.innerHTML=`<b>${o.title}</b><div class='small'>${o.desc}</div><div class='row between'><span>${o.price===0?'Бесплатно':o.price+' золота'}</span><button ${bought?'disabled':''}>${bought?'Куплено':'Получить'}</button></div>`;d.querySelector('button').onclick=()=>{if(bought)return;if(o.price>0&&s.profile.gold<o.price){app.ui.toast('Недостаточно золота');return;}if(o.price>0)app.state.addGold(-o.price);if(o.reward.gold)app.state.addGold(o.reward.gold);if(o.reward.copies){s.cards[o.reward.card].copies+=o.reward.copies;}s.meta.shop.bought[o.id]=true;app.ui.toast('Покупка успешна');app.state.emit();};el.appendChild(d);});
+  };
+
+  const oldRender=app.renderDynamic.bind(app);
+  app.renderDynamic=function(){
+    oldRender();
+    this.renderUpgrades(); this.renderChests(); this.renderQuests(); this.renderAchievements(); this.renderShop();
+  };
+
+  const oldLoop=app.battle.loop.bind(app.battle);
+  app.battle.loop=function(){
+    if(!this.running) return;
+    const now=performance.now(); this._last=this._last||now; const dt=Math.min(.033,(now-this._last)/1000); this._last=now;
+    app.tweens.tick(dt);
+    for(const c of s.meta.chests.slots){if(c&&c.started&&c.remain>0)c.remain=Math.max(0,c.remain-dt);}
+    this.update(dt);
+    requestAnimationFrame(()=>this.loop());
+  };
+
+  app.state.emit();
+})();
+</script>
+
 </body></html>
