@@ -548,6 +548,23 @@
 
     .timer { font-size: 20px; font-weight: 900; }
 
+    .energy-hud {
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      top: 64px;
+      pointer-events: none;
+      background: rgba(12,22,36,.72);
+      border: 1px solid rgba(140,208,255,.45);
+      border-radius: 12px;
+      padding: 6px 10px;
+    }
+    .energy-hud .txt { font-size: 18px; font-weight: 900; text-align:center; }
+    .energy-bar { height: 12px; border-radius: 999px; background: rgba(0,0,0,.5); overflow:hidden; margin-top:4px; }
+    .energy-fill { height:100%; width:0%; background: linear-gradient(90deg,#4dd0ff,#7bf4c3); box-shadow: 0 0 14px rgba(98,215,255,.45); transition: width .12s linear; }
+    .energy-hud.full .energy-fill { background: linear-gradient(90deg,#8ef4ff,#e4ff90); box-shadow: 0 0 22px rgba(226,255,151,.95); }
+
+
     .overtime-banner {
       position: absolute;
       top: 44px;
@@ -740,7 +757,7 @@
 /*
   Controls:
   - Menu: use bottom tabs (Home/Cards/Deck/Settings).
-  - Play: tap PLAY on Home.
+  - Play: tap В БОЙ on Home.
   - Battle: tap a card in hand, then tap player half to deploy.
   - Debug: press `D` to toggle debug metrics/hitboxes.
 
@@ -765,7 +782,7 @@
   const APP_STATES = {
     BOOT: 'BOOT',
     MAIN_MENU: 'MAIN_MENU',
-    COLLECTION: 'COLLECTION',
+    КОЛЛЕКЦИЯ: 'КОЛЛЕКЦИЯ',
     DECK_BUILDER: 'DECK_BUILDER',
     SETTINGS: 'SETTINGS',
     BATTLE: 'BATTLE',
@@ -854,7 +871,7 @@
       const fallback = {
         selectedDeck: [...DEFAULT_DECK],
         unlockedCards: Object.keys(CARD_LIBRARY),
-        settings: { sfx: true, quality: 'high', difficulty: 'normal', colorblind: false, debug: false },
+        settings: { sfx: true, music: true, sfxVolume: 0.7, musicVolume: 0.45, quality: 'high', difficulty: 'normal', colorblind: false, debug: false },
         stats: { wins: 0, losses: 0, battles: 0, crownsFor: 0, crownsAgainst: 0 }
       };
       try {
@@ -906,12 +923,16 @@
     constructor(save) {
       this.save = save;
       this.ctx = null;
+      this.musicNodes = null;
+      this.musicTick = 0;
     }
     ensure() {
       if (!this.ctx) {
         this.ctx = new (window.AudioContext || window.webkitAudioContext)();
       }
     }
+    volumeSfx(){ return clamp(this.save.data.settings.sfxVolume ?? 0.7,0,1); }
+    volumeMusic(){ return clamp(this.save.data.settings.musicVolume ?? 0.45,0,1); }
     beep(type='tap') {
       if (!this.save.data.settings.sfx) return;
       this.ensure();
@@ -924,11 +945,30 @@
       o.frequency.setValueAtTime(f, now);
       o.frequency.exponentialRampToValueAtTime(f * (type === 'spell' ? 1.4 : 0.85), now + 0.1);
       g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.07, now + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.09*this.volumeSfx(), now + 0.01);
       g.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
       o.connect(g).connect(c.destination);
-      o.start(now);
-      o.stop(now + 0.15);
+      o.start(now); o.stop(now + 0.15);
+    }
+    pulse(freq, dur=0.22, type='sine', vol=0.04){
+      this.ensure();
+      const c=this.ctx, n=c.currentTime;
+      const o=c.createOscillator(), g=c.createGain();
+      o.type=type; o.frequency.value=freq;
+      g.gain.setValueAtTime(0.0001,n);
+      g.gain.exponentialRampToValueAtTime(vol*this.volumeMusic(),n+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001,n+dur);
+      o.connect(g).connect(c.destination); o.start(n); o.stop(n+dur+0.02);
+    }
+    update(dt, inBattle=false){
+      if (!this.save.data.settings.music || !inBattle) return;
+      this.musicTick -= dt;
+      if (this.musicTick>0) return;
+      this.musicTick = 0.48;
+      const seq=[220,262,294,330,294,262,247,196];
+      const i=(Math.floor(performance.now()/480))%seq.length;
+      this.pulse(seq[i],0.35,'triangle',0.035);
+      if(i%2===0) this.pulse(seq[(i+3)%seq.length]*0.5,0.4,'sine',0.02);
     }
   }
 
@@ -1397,9 +1437,11 @@
         ctx.beginPath(); ctx.moveTo(-12,-8); ctx.lineTo(8,14); ctx.moveTo(10,-12); ctx.lineTo(-6,15); ctx.stroke();
       }
       ctx.restore();
-      const hpW = 74;
-      ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fillRect(this.x-hpW/2, this.y-62, hpW, 8);
-      ctx.fillStyle='#77ef9e'; ctx.fillRect(this.x-hpW/2, this.y-62, hpW * (this.hp/this.maxHp), 8);
+      const hpW = 112;
+      ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fillRect(this.x-hpW/2, this.y-78, hpW, 12);
+      ctx.strokeStyle = this.side===TEAM.PLAYER ? 'rgba(120,210,255,.95)' : 'rgba(255,146,146,.95)';
+      ctx.strokeRect(this.x-hpW/2, this.y-78, hpW, 12);
+      ctx.fillStyle=this.side===TEAM.PLAYER ? '#5be0ff' : '#ff8b8b'; ctx.fillRect(this.x-hpW/2, this.y-78, hpW * (this.hp/this.maxHp), 12);
     }
   }
 
@@ -1893,6 +1935,7 @@
           <div class="hud-box" id="rightHUD">ИИ 0 👑</div>
         </div>
         <div class="overtime-banner" id="otBanner">ОВЕРТАЙМ</div>
+        <div class="energy-hud" id="energyHud"><div class="txt" id="energyTxt">Энергия: 0/10</div><div class="energy-bar"><div class="energy-fill" id="energyFill"></div></div></div>
         <div class="hand-wrap">
           <div class="hand-cards" id="handCards"></div>
           <div class="next-card" id="nextCard">ДАЛЕЕ</div>
@@ -1910,6 +1953,9 @@
         handEl: this.battleLayer.querySelector('#handCards'),
         nextEl: this.battleLayer.querySelector('#nextCard'),
         otEl: this.battleLayer.querySelector('#otBanner'),
+        energyHud: this.battleLayer.querySelector('#energyHud'),
+        energyTxt: this.battleLayer.querySelector('#energyTxt'),
+        energyFill: this.battleLayer.querySelector('#energyFill'),
         ghostEl: this.battleLayer.querySelector('#dragGhost'),
         refreshHand: () => {
           overlay.handEl.innerHTML = '';
@@ -1945,7 +1991,7 @@
           scene.app.cardRenderer.drawCardArt(n.getContext('2d'), next, 0, 0, 58, 58, performance.now()*0.001);
           overlay.nextEl.innerHTML = '<div>ДАЛЕЕ</div>';
           overlay.nextEl.appendChild(n);
-          const e = document.createElement('div'); e.textContent = `Энергия ${scene.elixir.player.toFixed(1)}/10`; e.style.fontWeight = '800'; e.style.marginTop = '2px'; overlay.nextEl.appendChild(e);
+
         },
         moveDrag: (clientX, clientY) => {
           if (!scene.drag) return;
@@ -1974,6 +2020,10 @@
           overlay.timerEl.textContent = `${m}:${s}`;
           overlay.leftEl.textContent = `Игрок ${scene.getCrowns(TEAM.PLAYER)} 👑`;
           overlay.rightEl.textContent = `ИИ ${scene.getCrowns(TEAM.ENEMY)} 👑`;
+          overlay.energyTxt.textContent = `Энергия: ${scene.elixir.player.toFixed(1)}/10`;
+          const perc = clamp(scene.elixir.player/10,0,1)*100;
+          overlay.energyFill.style.width = `${perc}%`;
+          overlay.energyHud.classList.toggle('full', scene.elixir.player >= 9.95);
           overlay.refreshHand();
         },
         remove: () => { this.battleLayer.innerHTML = ''; }
@@ -2011,7 +2061,7 @@
       const on = this.app.save.data.settings.debug;
       this.debugPanel.classList.toggle('show', on && this.app.state === APP_STATES.BATTLE);
       if (!(on && this.app.state === APP_STATES.BATTLE)) return;
-      this.debugPanel.textContent = `FPS: ${fps.toFixed(1)}\nUnits: ${scene.units.length}\nProj: ${scene.projectiles.list.length}\nParticles: ${scene.fx.aliveCount()}\nElixir: ${scene.elixir.player.toFixed(1)} / ${scene.elixir.enemy.toFixed(1)}`;
+      this.debugPanel.textContent = `К/с: ${fps.toFixed(1)}\nЮниты: ${scene.units.length}\nСнаряды: ${scene.projectiles.list.length}\nЧастицы: ${scene.fx.aliveCount()}\nЭнергия: ${scene.elixir.player.toFixed(1)} / ${scene.elixir.enemy.toFixed(1)}`;
     }
   }
 
@@ -2027,16 +2077,16 @@
       const s = this.app.save.data.stats;
       this.root.innerHTML = `
         <div class="card-panel home-hero">
-          <h1>Welcome, Commander</h1>
-          <p>Build your deck, collect cards, and duel smart bots in lane-based real-time battles.</p>
-          <button class="big-play" id="playBtn">PLAY</button>
+          <h1>Командир, к бою!</h1>
+          <p>Собирайте колоду, прокачивайте карты и побеждайте ИИ в боях на линиях в реальном времени.</p>
+          <button class="big-play" id="playBtn">В БОЙ</button>
         </div>
-        <div class="section-title">CURRENT DECK</div>
+        <div class="section-title">ТЕКУЩАЯ КОЛОДА</div>
         <div class="card-panel deck-strip" id="homeDeck"></div>
         <div class="home-stats">
           <div class="home-stat"><div class="v">${s.wins}</div><div class="k">Победы</div></div>
           <div class="home-stat"><div class="v">${s.battles}</div><div class="k">Бои</div></div>
-          <div class="home-stat"><div class="v">${avg}</div><div class="k">Avg Cost</div></div>
+          <div class="home-stat"><div class="v">${avg}</div><div class="k">Средняя стоимость</div></div>
         </div>`;
       this.root.querySelector('#playBtn').onclick = () => this.app.startBattle();
       const deckEl = this.root.querySelector('#homeDeck');
@@ -2080,20 +2130,20 @@
     renderLayout() {
       this.root.innerHTML = `
         <div class="controls-row">
-          <input class="input" id="searchCards" placeholder="Search cards..." />
+          <input class="input" id="searchCards" placeholder="Поиск карты..." />
           <select class="select" id="filterType">
-            <option value="all">All Types</option>
-            <option value="unit">Units</option>
-            <option value="spell">Spells</option>
+            <option value="all">Все типы</option>
+            <option value="unit">Юниты</option>
+            <option value="spell">Заклинания</option>
           </select>
         </div>
         <div class="controls-row">
           <select class="select" id="sortType">
-            <option value="cost">Sort: Cost</option>
-            <option value="rarity">Sort: Rarity</option>
-            <option value="name">Sort: Name</option>
+            <option value="cost">Сортировка: стоимость</option>
+            <option value="rarity">Сортировка: редкость</option>
+            <option value="name">Сортировка: имя</option>
           </select>
-          <button class="btn secondary" id="clearFilter">Reset</button>
+          <button class="btn secondary" id="clearFilter">Сброс</button>
         </div>
         <div class="cards-grid" id="cardsGrid"></div>`;
       this.grid = this.root.querySelector('#cardsGrid');
@@ -2133,7 +2183,7 @@
           <canvas class="tile-canvas" width="180" height="96"></canvas>
           <div class="tile-name">${c.name}</div>
           <div class="tile-desc">${c.desc}</div>
-          <div class="rarity-tag" style="color:${RARITY_COLOR[c.rarity]}">${c.rarity}</div>`;
+          <div class="rarity-tag" style="color:${RARITY_COLOR[c.rarity]}">${({common:"Обычная",rare:"Редкая",epic:"Эпическая",legendary:"Легендарная"}[c.rarity])}</div>`;
         this.app.cardRenderer.drawCardArt(tile.querySelector('canvas').getContext('2d'), c.id, 0,0,180,96,performance.now()*0.001);
         tile.onclick = () => this.openDetail(c.id);
         this.grid.appendChild(tile);
@@ -2143,7 +2193,7 @@
       const c = CARD_LIBRARY[cardId];
       const body = this.modal.querySelector('.modal');
       const stats = c.type === 'unit'
-        ? `HP ${c.stats.hp} · DMG ${c.stats.dmg} · SPD ${c.stats.speed} · RNG ${c.stats.range} · ATK/s ${c.stats.as}`
+        ? `ЗД ${c.stats.hp} · УРН ${c.stats.dmg} · СКР ${c.stats.speed} · ДАЛЬН ${c.stats.range} · АТК/с ${c.stats.as}`
         : Object.entries(c.spell).map(([k,v]) => `${k}:${v}`).join(' · ');
       body.innerHTML = `<h3>${c.name}</h3><p>${c.desc}</p><p style="margin-top:6px">${stats}</p>
         <canvas id="detailArt" width="360" height="170" style="width:100%;height:170px;border-radius:10px;border:1px solid rgba(160,203,255,.35);margin-top:8px;background:radial-gradient(circle at 40% 20%,rgba(106,151,205,.5),rgba(16,27,44,.95));"></canvas>
@@ -2212,14 +2262,14 @@
     }
     addToDeck(cardId) {
       if (this.deck.includes(cardId)) { this.menu.tip('No duplicates allowed'); return; }
-      if (this.deck.length >= 8) { this.menu.tip('Deck already has 8 cards'); return; }
+      if (this.deck.length >= 8) { this.menu.tip('В колоде уже 8 карт'); return; }
       this.deck.push(cardId);
       this.render();
     }
     saveDeck() {
-      if (this.deck.length !== 8) { this.menu.tip('Deck must have exactly 8 cards'); return; }
+      if (this.deck.length !== 8) { this.menu.tip('В колоде должно быть ровно 8 карт'); return; }
       this.app.save.setDeck(this.deck);
-      this.menu.tip('Deck saved');
+      this.menu.tip('Колода сохранена');
       this.app.homeUI?.render();
     }
     summary() {
@@ -2233,18 +2283,18 @@
       this.root.innerHTML = `
         <div class="deck-builder-layout">
           <div class="card-panel deck-top">
-            <div class="section-title" style="margin-top:0">DECK SLOTS (${this.deck.length}/8)</div>
+            <div class="section-title" style="margin-top:0">СЛОТЫ КОЛОДЫ (${this.deck.length}/8)</div>
             <div class="deck-strip" id="deckSlots"></div>
             <div class="deck-info">
-              <div>Avg Cost: <b>${sum.avg.toFixed(2)}</b></div>
-              <div>Units ${sum.units} / Spells ${sum.spells}</div>
+              <div>Средняя стоимость: <b>${sum.avg.toFixed(2)}</b></div>
+              <div>Юниты ${sum.units} / Заклинания ${sum.spells}</div>
             </div>
             <div class="deck-actions">
-              <button class="btn" id="saveDeckBtn">Save Колода</button>
-              <button class="btn secondary" id="recommendBtn">Recommended Колода</button>
+              <button class="btn" id="saveDeckBtn">Сохранить колоду</button>
+              <button class="btn secondary" id="recommendBtn">Рекомендовать</button>
             </div>
           </div>
-          <div class="section-title">COLLECTION</div>
+          <div class="section-title">КОЛЛЕКЦИЯ</div>
           <div class="collection-list" id="deckCollection"></div>
         </div>`;
       const slots = this.root.querySelector('#deckSlots');
@@ -2253,9 +2303,9 @@
         const slot = document.createElement('div');
         slot.className = 'deck-slot' + (id ? ' filled' : '');
         if (id) {
-          slot.innerHTML = `${CARD_LIBRARY[id].name}<br><small>Cost ${CARD_LIBRARY[id].cost}</small>`;
+          slot.innerHTML = `${CARD_LIBRARY[id].name}<br><small>Стоимость ${CARD_LIBRARY[id].cost}</small>`;
           slot.onclick = () => this.removeFromDeck(id);
-        } else slot.textContent = 'Empty';
+        } else slot.textContent = 'Пусто';
         slots.appendChild(slot);
       }
       this.root.querySelector('#saveDeckBtn').onclick = () => this.saveDeck();
@@ -2265,7 +2315,7 @@
         const item = document.createElement('div');
         item.className = 'mini-card';
         item.style.borderColor = RARITY_COLOR[c.rarity];
-        item.innerHTML = `<canvas class="mini-art" width="56" height="70"></canvas><div><div class="mini-name">${c.name}</div><div class="mini-meta">${c.type.toUpperCase()} · Cost ${c.cost}</div><div class="mini-meta">${c.rarity}</div></div>`;
+        item.innerHTML = `<canvas class="mini-art" width="56" height="70"></canvas><div><div class="mini-name">${c.name}</div><div class="mini-meta">${c.type==='unit'?'Юнит':'Заклинание'} · Стоимость ${c.cost}</div><div class="mini-meta">${({common:"Обычная",rare:"Редкая",epic:"Эпическая",legendary:"Легендарная"}[c.rarity])}</div></div>`;
         this.app.cardRenderer.drawCardArt(item.querySelector('canvas').getContext('2d'), c.id, 0,0,56,70,performance.now()*0.001);
         item.onclick = () => this.addToDeck(c.id);
         list.appendChild(item);
@@ -2297,8 +2347,12 @@
 
       const row1 = document.createElement('div');
       row1.className = 'setting-row';
-      row1.innerHTML = `<h4>Звук</h4><p>Переключение звуков интерфейса и боя.</p><div class="toggle-line"><span>Звуки</span></div>`;
-      row1.querySelector('.toggle-line').appendChild(this.makeSwitch(cfg.sfx, v => this.app.save.setSetting('sfx', v)));
+      row1.innerHTML = `<h4>Звук</h4><p>Управление музыкой и звуковыми эффектами.</p><div class="toggle-line"><span>Звуки</span></div><div class="toggle-line"><span>Музыка</span></div><label>Громкость звуков <input type="range" min="0" max="1" step="0.05" id="sfxVol"></label><label>Громкость музыки <input type="range" min="0" max="1" step="0.05" id="musicVol"></label>`;
+      const toggles = row1.querySelectorAll('.toggle-line');
+      toggles[0].appendChild(this.makeSwitch(cfg.sfx, v => this.app.save.setSetting('sfx', v)));
+      toggles[1].appendChild(this.makeSwitch(cfg.music ?? true, v => this.app.save.setSetting('music', v)));
+      const sfxVol = row1.querySelector('#sfxVol'); sfxVol.value = cfg.sfxVolume ?? 0.7; sfxVol.oninput = () => this.app.save.setSetting('sfxVolume', Number(sfxVol.value));
+      const musicVol = row1.querySelector('#musicVol'); musicVol.value = cfg.musicVolume ?? 0.45; musicVol.oninput = () => this.app.save.setSetting('musicVolume', Number(musicVol.value));
       list.appendChild(row1);
 
       const row2 = document.createElement('div');
@@ -2405,6 +2459,7 @@
       if (this.state === APP_STATES.BATTLE && this.scene) {
         this.scene.update(dt);
       }
+      this.audio.update(dt, this.state === APP_STATES.BATTLE);
     }
     render() {
       if (this.state === APP_STATES.BATTLE && this.scene) {
